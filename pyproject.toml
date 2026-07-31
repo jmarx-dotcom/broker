@@ -31,4 +31,9 @@ broker = ["universe/data/*.csv", "report/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "src" macht das Paket importierbar, "." das Verzeichnis tests/ — die
+# Testmodule teilen sich die Fixture-Fabriken über "from tests.conftest import".
+# Ohne "." funktioniert das nur, wenn pytest als "python -m pytest" gestartet
+# wird (das legt das Arbeitsverzeichnis auf den Suchpfad); der direkte Aufruf
+# "pytest", wie ihn die CI nutzt, scheitert sonst beim Import.
+pythonpath = ["src", "."]
