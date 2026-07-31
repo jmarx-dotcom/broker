@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aktien-Screening {{ generated }}</title>
+<style>
+  :root {
+    --bg: #fbfbf9; --panel: #ffffff; --ink: #1a1a19; --muted: #6b6b66;
+    --line: #e4e3de; --accent: #1f6f5c; --warn: #a4501e; --bad: #9b2c2c;
+    --chip: #f0efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1e2024; --ink: #e9e8e4; --muted: #9a9a94;
+      --line: #2e3136; --accent: #58b39a; --warn: #d99a5f; --bad: #e07070;
+      --chip: #272a2f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 1.65rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.1rem; margin: 2.5rem 0 .75rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 2rem; font-size: .92rem; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 1.1rem 1.25rem; margin-bottom: 1rem;
+  }
+  .macro-grid {
+    display: grid; gap: .6rem 1.5rem;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    margin-top: .75rem;
+  }
+  .macro-item { font-size: .88rem; }
+  .macro-item span { display: block; color: var(--muted); font-size: .78rem; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 720px; }
+  th, td { text-align: right; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child,
+  th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: .78rem;
+       text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:hover { background: var(--chip); }
+  .card { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
+  .card-head { display: flex; flex-wrap: wrap; align-items: baseline;
+               gap: .5rem 1rem; margin-bottom: .35rem; }
+  .card-head h3 { margin: 0; font-size: 1.08rem; }
+  .ticker { color: var(--muted); font-size: .85rem; font-family: ui-monospace, monospace; }
+  .score { margin-left: auto; font-size: 1.35rem; font-weight: 600; color: var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 .9rem; }
+  .chip { background: var(--chip); border-radius: 99px; padding: .2rem .7rem;
+          font-size: .78rem; color: var(--muted); }
+  .metrics { display: grid; gap: .5rem 1.25rem;
+             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+             margin-bottom: .9rem; }
+  .metric { font-size: .88rem; }
+  .metric span { display: block; color: var(--muted); font-size: .76rem; }
+  .block { margin-top: .85rem; }
+  .block h4 { margin: 0 0 .3rem; font-size: .8rem; text-transform: uppercase;
+              letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .block p { margin: 0 0 .4rem; font-size: .92rem; }
+  ul { margin: .2rem 0; padding-left: 1.15rem; font-size: .9rem; }
+  li { margin-bottom: .2rem; }
+  .flag { color: var(--bad); }
+  .verdict-zyklisch-guenstig { color: var(--accent); font-weight: 600; }
+  .verdict-strukturell-billig { color: var(--bad); font-weight: 600; }
+  .verdict-unklar { color: var(--warn); font-weight: 600; }
+  .news a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line); }
+  .news a:hover { border-bottom-color: var(--accent); }
+  footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: .82rem; }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Aktien-Screening</h1>
+  <p class="sub">
+    {{ generated }} &middot; Universum: {{ universe_label }} &middot;
+    {{ stats.universe_size }} geprüft, {{ candidates|length }} Treffer
+  </p>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Makroumfeld</h2>
+    {% if regime.live %}
+      <p style="margin:0">{{ regime.summary }}</p>
+      <div class="macro-grid">
+        {% for s in regime.series.values() %}
+          <div class="macro-item">
+            <span>{{ s.label }}</span>
+            {{ "%.2f"|format(s.value) if s.value is not none else "n/a" }}{{ s.unit }}
+            {%- if s.change_3m is not none %}
+              <span>3 Monate: {{ "%+.2f"|format(s.change_3m) }}</span>
+            {%- endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="empty" style="margin:0">{{ regime.summary }}</p>
+    {% endif %}
+  </div>
+
+  <h2>Übersicht</h2>
+  {% if candidates %}
+  <div class="panel scroll" style="padding:.5rem 1rem">
+    <table>
+      <thead>
+        <tr>
+          <th>Titel</th><th>Sektor</th><th>Score</th><th>KGV</th>
+          <th>KGV erw.</th><th>Perzentil</th><th>vs. Branche</th>
+          <th>RSI</th><th>zum Hoch</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in candidates %}
+        <tr>
+          <td>{{ c.name }}<br><span class="ticker">{{ c.ticker }}</span></td>
+          <td>{{ sector_label(c.fundamentals.sector) }}</td>
+          <td><strong>{{ "%.0f"|format(c.total_score) }}</strong></td>
+          <td>{{ fmt(c.valuation.trailing_pe, 1) }}</td>
+          <td>{{ fmt(c.valuation.forward_pe, 1) }}</td>
+          <td>{{ fmt(c.valuation.pe_percentile_own_history, 0) }}</td>
+          <td>{{ fmt(c.valuation.pe_vs_sector_median, 2) }}</td>
+          <td>{{ fmt(c.technical.rsi14, 0) }}</td>
+          <td>{{ pct(c.technical.upside_to_52w_high) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel"><p class="empty" style="margin:0">
+    Kein Titel hat die Score-Schwelle erreicht. Das ist ein gültiges Ergebnis,
+    kein Fehler — je nach Marktlage kann das über längere Zeiträume vorkommen.
+  </p></div>
+  {% endif %}
+
+  {% for c in candidates %}
+  <h2 {% if loop.first %}id="details"{% endif %}>{{ loop.index }}. {{ c.name }}</h2>
+  <div class="card">
+    <div class="card-head">
+      <h3>{{ c.name }}</h3>
+      <span class="ticker">{{ c.ticker }}</span>
+      <span class="score">{{ "%.0f"|format(c.total_score) }}</span>
+    </div>
+
+    <div class="chips">
+      <span class="chip">{{ sector_label(c.fundamentals.sector) }}</span>
+      <span class="chip">{{ c.technical.setup }}</span>
+      <span class="chip">Bewertung {{ "%.0f"|format(c.valuation.score) }}</span>
+      <span class="chip">Qualität {{ "%.0f"|format(c.quality.score) }}</span>
+      <span class="chip">Chart {{ "%.0f"|format(c.technical.score) }}</span>
+      <span class="chip">Makro {{ "%.0f"|format(c.macro_score) }}</span>
+    </div>
+
+    <div class="metrics">
+      <div class="metric"><span>KGV aktuell</span>{{ fmt(c.valuation.trailing_pe, 1) }}</div>
+      <div class="metric"><span>KGV erwartet</span>{{ fmt(c.valuation.forward_pe, 1) }}</div>
+      <div class="metric"><span>Perzentil eigene Historie</span>{{ fmt(c.valuation.pe_percentile_own_history, 0) }}</div>
+      <div class="metric"><span>Branchenmedian</span>{{ fmt(c.valuation.sector_median_pe, 1) }}</div>
+      <div class="metric"><span>Kurs</span>{{ fmt(c.technical.price, 2) }} {{ c.fundamentals.currency or "" }}</div>
+      <div class="metric"><span>RSI (14)</span>{{ fmt(c.technical.rsi14, 0) }}</div>
+      <div class="metric"><span>Unter 52-Wochen-Hoch</span>{{ pct(c.technical.drawdown_from_52w_high) }}</div>
+      <div class="metric"><span>Nettoschulden / EBITDA</span>{{ fmt(c.quality.net_debt_to_ebitda, 1) }}</div>
+      <div class="metric"><span>Umsatzwachstum</span>{{ pct(c.quality.revenue_growth) }}</div>
+      <div class="metric"><span>Rel. Stärke 6M</span>{{ pct(c.technical.relative_strength_6m) }}</div>
+    </div>
+
+    {% if c.llm and not c.llm.error %}
+    <div class="block">
+      <h4>Einordnung</h4>
+      <p><strong>{{ c.llm.summary }}</strong></p>
+      <p>{{ c.llm.cheap_because }}</p>
+      <p>{{ c.llm.macro_alignment }}</p>
+      <p>
+        Bewertung des Falls:
+        <span class="verdict-{{ c.llm.verdict }}">{{ verdict_label(c.llm.verdict) }}</span>
+        &middot; Konfidenz: {{ c.llm.confidence }}
+      </p>
+    </div>
+    {% if c.llm.key_risks %}
+    <div class="block">
+      <h4>Risiken</h4>
+      <ul>{% for r in c.llm.key_risks %}<li>{{ r }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% elif c.llm and c.llm.error %}
+    <div class="block">
+      <h4>Einordnung</h4>
+      <p class="empty">Nicht verfügbar: {{ c.llm.error }}</p>
+    </div>
+    {% endif %}
+
+    {% if c.quality.red_flags %}
+    <div class="block">
+      <h4>Warnsignale</h4>
+      <ul>{% for f in c.quality.red_flags %}<li class="flag">{{ f }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% if c.valuation.notes or c.technical.notes %}
+    <div class="block">
+      <h4>Beobachtungen</h4>
+      <ul>
+        {% for n in c.valuation.notes %}<li>{{ n }}</li>{% endfor %}
+        {% for n in c.technical.notes %}<li>{{ n }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if c.news %}
+    <div class="block news">
+      <h4>Schlagzeilen</h4>
+      <ul>
+        {% for n in c.news %}
+        <li>
+          {% if n.url %}<a href="{{ n.url }}">{{ n.title }}</a>{% else %}{{ n.title }}{% endif %}
+          {% if n.published %}<span class="ticker"> &middot; {{ n.published }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <footer>
+    <p>{{ stats.summary() }}</p>
+    <p>
+      Dieses Dokument ist ein automatisch erzeugtes Rechercheergebnis und
+      <strong>keine Anlageberatung</strong>. Die Kennzahlen stammen aus
+      automatisierten Quellen und können fehlerhaft, veraltet oder unvollständig
+      sein. Ein niedriges KGV ist für sich genommen kein Kaufsignal — jeder
+      Treffer ist ein Kandidat für eine eigene Prüfung, kein Ergebnis.
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>

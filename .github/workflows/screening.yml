@@ -1,0 +1,62 @@
+name: Aktien-Screening
+
+on:
+  schedule:
+    # Werktags 18:30 UTC — nach US-Handelsschluss ist die Datenlage vollständig.
+    - cron: "30 18 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "Universum (dax, germany, europe, sp500, all …)"
+        default: "europe"
+      no_llm:
+        description: "Ohne LLM-Einordnung laufen"
+        type: boolean
+        default: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Abhängigkeiten installieren
+        run: pip install -e .
+
+      - name: Screening starten
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          broker screen \
+            --universe "${{ inputs.universe || 'europe' }}" \
+            ${{ inputs.no_llm && '--no-llm' || '' }} \
+            --report --json --notify
+
+      - name: Report als Artifact ablegen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screening-${{ github.run_number }}
+          path: out/
+          retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
