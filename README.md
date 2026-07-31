@@ -100,6 +100,18 @@ Alles über Umgebungsvariablen oder `.env` (siehe `.env.example`).
 Ohne `FRED_API_KEY` wird der Makro-Teil neutral bewertet und im Report als
 solcher gekennzeichnet — er täuscht keine Daten vor, die er nicht hat.
 
+Umschließender Leerraum wird bei allen Keys automatisch entfernt. Beim
+Kopieren in Web-Formulare rutscht regelmäßig ein Leerzeichen mit ans Ende, und
+die Gegenstelle antwortet dann mit einem nichtssagenden `400` oder `401` auf
+einen Key, der im maskierten Log völlig korrekt aussieht.
+
+Ob die Benachrichtigung funktioniert, prüfst du ohne kompletten Lauf:
+
+```bash
+broker notify          # zeigt eingerichtete Kanäle, validiert den Bot-Token
+broker notify --send   # verschickt zusätzlich eine Testnachricht
+```
+
 ## Befehle
 
 ```bash
@@ -109,6 +121,8 @@ broker screen --universe dax --ticker ROCK.CO  # Index plus eigene Titel
 broker screen --universe DAX,SP500 --limit 50  # eigene Indexkombination
 broker macro                                   # Makrobild und Sektor-Scores
 broker universe germany                        # Titel einer Gruppe auflisten
+broker notify                                  # Benachrichtigung prüfen
+broker notify --send                           # Testnachricht verschicken
 broker cache --keep-days 3                     # alte Cache-Tage löschen
 ```
 

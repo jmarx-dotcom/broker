@@ -126,9 +126,11 @@ def cmd_screen(args: argparse.Namespace) -> int:
     if args.notify:
         from broker.notify import notify
 
-        channels = notify(result)
-        if channels:
-            print(f"Benachrichtigung verschickt über: {', '.join(channels)}")
+        outcome = notify(result)
+        if outcome.sent:
+            print(f"Benachrichtigung verschickt über: {', '.join(outcome.sent)}")
+        if outcome.failed:
+            print(f"Benachrichtigung fehlgeschlagen: {', '.join(outcome.failed)}")
 
     return 0
 
@@ -170,6 +172,50 @@ def cmd_universe(args: argparse.Namespace) -> int:
     for entry in entries:
         print(f"{entry.ticker:<12} {entry.index:<10} {entry.region}")
     print(f"\n{len(entries)} Titel", file=sys.stderr)
+    return 0
+
+
+def cmd_notify(args: argparse.Namespace) -> int:
+    """Prüft die Benachrichtigungskanäle, ohne ein Screening zu rechnen."""
+    from broker.notify import (
+        check_telegram,
+        email_configured,
+        send_all,
+        telegram_configured,
+    )
+
+    Config.from_env()  # lädt die .env-Datei
+
+    print("\nEingerichtete Kanäle:")
+    print(f"  Telegram: {'ja' if telegram_configured() else 'nein'}")
+    print(f"  E-Mail:   {'ja' if email_configured() else 'nein'}")
+
+    if telegram_configured():
+        ok, message = check_telegram()
+        print(f"\nTelegram-Token: {message}")
+        if not ok:
+            return 1
+
+    if not args.send:
+        print("\n(Mit --send wird zusätzlich eine Testnachricht verschickt.)\n")
+        return 0
+
+    outcome = send_all(
+        subject="Aktien-Screening: Testnachricht",
+        body=(
+            "Testnachricht vom Aktien-Screener.\n\n"
+            "Wenn du das liest, ist die Benachrichtigung korrekt eingerichtet."
+        ),
+    )
+    if outcome.sent:
+        print(f"\nVerschickt über: {', '.join(outcome.sent)}")
+    if outcome.failed:
+        print(f"Fehlgeschlagen: {', '.join(outcome.failed)}")
+        return 1
+    if not outcome.configured:
+        print("\nKein Kanal eingerichtet — es wurde nichts verschickt.")
+        return 1
+    print()
     return 0
 
 
@@ -218,6 +264,14 @@ def build_parser() -> argparse.ArgumentParser:
     universe.add_argument("group", nargs="?", default="all")
     universe.add_argument("--list", action="store_true", help="Gruppen auflisten")
     universe.set_defaults(func=cmd_universe)
+
+    notify_cmd = sub.add_parser(
+        "notify", help="Benachrichtigungskanäle prüfen (ohne Screening)"
+    )
+    notify_cmd.add_argument(
+        "--send", action="store_true", help="Testnachricht tatsächlich verschicken"
+    )
+    notify_cmd.set_defaults(func=cmd_notify)
 
     cache = sub.add_parser("cache", help="Cache aufräumen")
     cache.add_argument("--keep-days", type=int, default=3)

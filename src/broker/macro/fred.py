@@ -140,4 +140,15 @@ class FredClient:
             series = self.fetch_series(spec)
             if series is not None:
                 result[spec.key] = series
+
+        # Scheitert *jede* Reihe, liegt es fast nie an den Reihen selbst,
+        # sondern am Key. Der ist im Log maskiert und sieht dort immer richtig
+        # aus — deshalb hier ein konkreter Hinweis statt elf gleicher Warnungen.
+        if self.available and not result:
+            log.error(
+                "Keine einzige FRED-Reihe abrufbar. Bei durchgängig 400er-Fehlern "
+                "ist der API-Key das Problem: er muss aus genau 32 Zeichen "
+                "bestehen (Kleinbuchstaben und Ziffern). Anführungszeichen oder "
+                "angehängte Leerzeichen führen zu genau diesem Bild."
+            )
         return result

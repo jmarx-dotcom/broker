@@ -7,16 +7,31 @@ der Report liegt dann nur als Datei vor.
 from __future__ import annotations
 
 import logging
-import os
 import smtplib
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
 
 import requests
 
+from broker.config import env
 from broker.screener import ScreeningResult
 
 log = logging.getLogger(__name__)
+
+TELEGRAM_API = "https://api.telegram.org"
+
+
+@dataclass
+class NotificationOutcome:
+    """Trennt sauber zwischen 'nicht eingerichtet' und 'ging schief'."""
+
+    sent: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.sent or self.failed)
 
 
 def build_summary(result: ScreeningResult, limit: int = 10) -> str:
@@ -37,30 +52,93 @@ def build_summary(result: ScreeningResult, limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+# -- Telegram --------------------------------------------------------------
+
+
+def telegram_configured() -> bool:
+    return bool(env("TELEGRAM_BOT_TOKEN") and env("TELEGRAM_CHAT_ID"))
+
+
 def send_telegram(text: str) -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    token = env("TELEGRAM_BOT_TOKEN")
+    chat_id = env("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return False
 
     try:
         response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
+            f"{TELEGRAM_API}/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": text[:4000]},
             timeout=20,
         )
-        response.raise_for_status()
-        return True
     except Exception as exc:
-        log.error("Telegram-Versand fehlgeschlagen: %s", exc)
+        log.error("Telegram nicht erreichbar: %s", exc)
         return False
+
+    if response.ok:
+        return True
+
+    # Telegram antwortet mit einem sprechenden Fehlertext — den wollen wir
+    # sehen, statt nur des HTTP-Codes.
+    detail = ""
+    try:
+        detail = response.json().get("description", "")
+    except Exception:
+        detail = response.text[:200]
+
+    log.error("Telegram-Versand fehlgeschlagen (%s): %s", response.status_code, detail)
+    if response.status_code == 401:
+        log.error(
+            "Der Bot-Token wird abgelehnt. Prüfen mit: "
+            "curl %s/bot<TOKEN>/getMe — das muss die Bot-Daten zurückgeben.",
+            TELEGRAM_API,
+        )
+    elif response.status_code in (400, 403):
+        log.error(
+            "Häufigste Ursache: Du hast dem Bot noch nie geschrieben. Ein Bot "
+            "darf niemanden von sich aus anschreiben — öffne den Chat mit "
+            "deinem Bot und drücke einmal Start."
+        )
+    return False
+
+
+def check_telegram() -> tuple[bool, str]:
+    """Prüft den Token über getMe, ohne eine Nachricht zu verschicken."""
+    token = env("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return False, "TELEGRAM_BOT_TOKEN ist nicht gesetzt."
+    if not env("TELEGRAM_CHAT_ID"):
+        return False, "TELEGRAM_CHAT_ID ist nicht gesetzt."
+
+    try:
+        response = requests.get(f"{TELEGRAM_API}/bot{token}/getMe", timeout=20)
+    except Exception as exc:
+        return False, f"Telegram nicht erreichbar: {exc}"
+
+    if not response.ok:
+        return False, (
+            f"Token abgelehnt ({response.status_code}). Der Token sieht so aus: "
+            "'8012345678:AAF…' — Zahlenblock, Doppelpunkt, Buchstabenblock."
+        )
+
+    name = response.json().get("result", {}).get("username", "?")
+    return True, f"Token gültig, Bot: @{name}"
+
+
+# -- E-Mail ----------------------------------------------------------------
+
+
+def email_configured() -> bool:
+    return all(
+        env(name) for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "SMTP_TO")
+    )
 
 
 def send_email(subject: str, body: str, attachment: Path | None = None) -> bool:
-    host = os.environ.get("SMTP_HOST")
-    user = os.environ.get("SMTP_USER")
-    password = os.environ.get("SMTP_PASSWORD")
-    recipient = os.environ.get("SMTP_TO")
+    host = env("SMTP_HOST")
+    user = env("SMTP_USER")
+    password = env("SMTP_PASSWORD")
+    recipient = env("SMTP_TO")
     if not all((host, user, password, recipient)):
         return False
 
@@ -79,7 +157,7 @@ def send_email(subject: str, body: str, attachment: Path | None = None) -> bool:
         )
 
     try:
-        port = int(os.environ.get("SMTP_PORT", "587"))
+        port = int(env("SMTP_PORT") or "587")
         with smtplib.SMTP(host, port, timeout=30) as smtp:
             smtp.starttls()
             smtp.login(user, password)
@@ -90,18 +168,35 @@ def send_email(subject: str, body: str, attachment: Path | None = None) -> bool:
         return False
 
 
-def notify(result: ScreeningResult, report_path: Path | None = None) -> list[str]:
-    """Verschickt die Zusammenfassung über alle konfigurierten Kanäle."""
-    summary = build_summary(result)
-    used: list[str] = []
+# -- Fassade ---------------------------------------------------------------
 
-    if send_telegram(summary):
-        used.append("telegram")
-    if send_email(
-        f"Aktien-Screening: {len(result.candidates)} Treffer", summary, report_path
-    ):
-        used.append("email")
 
-    if not used:
-        log.info("Kein Benachrichtigungskanal konfiguriert — nur Datei-Report.")
-    return used
+def send_all(subject: str, body: str, attachment: Path | None = None):
+    """Verschickt über alle *eingerichteten* Kanäle und meldet, was klappte."""
+    outcome = NotificationOutcome()
+
+    if telegram_configured():
+        (outcome.sent if send_telegram(body) else outcome.failed).append("Telegram")
+    if email_configured():
+        target = outcome.sent if send_email(subject, body, attachment) else outcome.failed
+        target.append("E-Mail")
+
+    if not outcome.configured:
+        log.info("Kein Benachrichtigungskanal eingerichtet — nur Datei-Report.")
+    elif outcome.failed:
+        # Das war vorher als 'nicht konfiguriert' gemeldet worden und hat den
+        # eigentlichen Fehler verdeckt.
+        log.error(
+            "Versand fehlgeschlagen über: %s. Die Zugangsdaten sind gesetzt, "
+            "werden aber abgelehnt.",
+            ", ".join(outcome.failed),
+        )
+    return outcome
+
+
+def notify(result: ScreeningResult, report_path: Path | None = None):
+    return send_all(
+        subject=f"Aktien-Screening: {len(result.candidates)} Treffer",
+        body=build_summary(result),
+        attachment=report_path,
+    )
