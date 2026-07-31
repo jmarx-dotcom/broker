@@ -85,7 +85,32 @@ aktuelle Schlagzeilen — es rechnet nichts nach und gibt keine Empfehlung ab.
 Ergebnis ist eine strukturierte Einordnung mit einem von drei Urteilen:
 `zyklisch-guenstig`, `strukturell-billig` oder `unklar`, plus Konfidenz.
 
-### 6. Journal — die Vorwärtsmessung
+### 6. Plausibilitätsprüfung der Rohdaten
+
+Die riskanteste Stelle des ganzen Werkzeugs: Ein falsches KGV erzeugt keinen
+Fehler, sondern einen besonders attraktiven Treffer — genau den, der oben auf
+der Liste landet und den man kauft.
+
+Solche Fehler lassen sich billig erkennen, weil die Kennzahlen redundant sind.
+Kurs geteilt durch Gewinn je Aktie *muss* das gemeldete KGV ergeben, Kurs mal
+Aktienzahl *muss* die Marktkapitalisierung ergeben. Wo das nicht aufgeht,
+stimmt etwas nicht — und man weiß es, ohne die Wahrheit zu kennen.
+
+| Prüfung | Findet |
+|---|---|
+| KGV gegen Kurs/Gewinn | nicht verarbeiteter Aktiensplit, veralteter Gewinn |
+| Erwartetes KGV gegen Kurs/Schätzung | dasselbe für Analystendaten |
+| Marktkapitalisierung gegen Kurs × Aktienzahl | Kennzahlen in verschiedenen Währungen |
+| Alter des letzten Kurses | ausgesetzter Handel, Delisting |
+| Größter Tagessprung | Split-Artefakt oder echter Kurssturz — beides verzerrt die Chart-Kennzahlen |
+
+Betroffene Titel **fliegen nicht raus**. Sie werden im Report benannt und im
+Score gedämpft (auf 90 % bei Auffälligkeiten, auf 60 % bei echten
+Widersprüchen). Ein stiller Ausschluss würde genau die Fälle verdecken, die man
+sehen will — und ein Titel soll nicht wegen eines falschen KGV nach oben
+rutschen.
+
+### 7. Journal — die Vorwärtsmessung
 
 Jeder Lauf hält seine Treffer mit Kurs, Datum und allen Teilscores in
 `journal/history.jsonl` fest. Spätere Läufe rechnen aus, wie sich diese Titel
@@ -216,7 +241,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-140 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+172 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 
@@ -228,7 +253,7 @@ src/broker/
   cli.py             Kommandozeile
   universe/          Indexlisten und Loader
   providers/         Marktdaten (Schnittstelle + yfinance + Cache)
-  analysis/          KGV, Chart, Qualität, Gesamtscore
+  analysis/          KGV, Chart, Qualität, Datenplausibilität, Gesamtscore
   macro/             FRED, Regime-Ableitung, Sektor-Sensitivität
   context/           News-Beschaffung, LLM-Einordnung
   journal.py         Vorwärtsmessung: was wurde wann vorgeschlagen, wie lief es

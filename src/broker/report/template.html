@@ -160,6 +160,9 @@
       <span class="chip">Qualität {{ "%.0f"|format(c.quality.score) }}</span>
       <span class="chip">Chart {{ "%.0f"|format(c.technical.score) }}</span>
       <span class="chip">Makro {{ "%.0f"|format(c.macro_score) }}</span>
+      {% if not c.data_quality.trustworthy %}
+        <span class="chip" style="color: var(--bad)">Daten widersprüchlich</span>
+      {% endif %}
       {% set seen = appearances.get(c.ticker, 0) %}
       {% if seen > 1 %}
         <span class="chip" title="Beständigkeit: mehrfach in Folge auf der Liste">{{ seen }} Läufe in Folge</span>
@@ -208,6 +211,26 @@
     <div class="block">
       <h4>Warnsignale</h4>
       <ul>{% for f in c.quality.red_flags %}<li class="flag">{{ f }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% if c.data_quality.flags %}
+    <div class="block">
+      <h4>Datenqualität</h4>
+      <ul>
+        {% for f in c.data_quality.flags %}
+        <li {% if f.severe %}class="flag"{% endif %}>
+          <strong>{{ f.check }}:</strong> {{ f.message }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% if not c.data_quality.trustworthy %}
+      <p class="empty">
+        Die Rohdaten widersprechen sich. Der Score wurde deshalb gedämpft — vor
+        einer Entscheidung sollten die Kennzahlen an einer zweiten Quelle
+        geprüft werden.
+      </p>
+      {% endif %}
     </div>
     {% endif %}
 

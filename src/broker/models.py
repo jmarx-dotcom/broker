@@ -25,6 +25,7 @@ class Fundamentals:
     country: str | None = None
     currency: str | None = None
     market_cap: float | None = None
+    shares_outstanding: float | None = None
 
     trailing_eps: float | None = None
     forward_eps: float | None = None
@@ -140,6 +141,41 @@ class QualityResult:
 
 
 @dataclass
+class DataFlag:
+    """Ein Befund der Plausibilitätsprüfung.
+
+    `severe` bedeutet: Die Kennzahlen widersprechen sich so deutlich, dass die
+    darauf aufbauende Bewertung nicht belastbar ist.
+    """
+
+    check: str
+    message: str
+    severe: bool = False
+
+
+@dataclass
+class DataQualityResult:
+    flags: list[DataFlag] = field(default_factory=list)
+
+    @property
+    def severe_flags(self) -> list[DataFlag]:
+        return [f for f in self.flags if f.severe]
+
+    @property
+    def trustworthy(self) -> bool:
+        return not self.severe_flags
+
+    @property
+    def penalty(self) -> float:
+        """Faktor auf den Gesamtscore. 1.0 = keine Abwertung."""
+        if self.severe_flags:
+            return 0.6
+        if self.flags:
+            return 0.9
+        return 1.0
+
+
+@dataclass
 class MacroSeries:
     """Eine Makro-Zeitreihe mit aktuellem Wert und Veränderung."""
 
@@ -206,6 +242,7 @@ class Candidate:
     quality: QualityResult
     macro_score: float = 50.0
     total_score: float = 0.0
+    data_quality: DataQualityResult = field(default_factory=DataQualityResult)
     news: list[NewsItem] = field(default_factory=list)
     llm: LLMContext | None = None
 
@@ -265,6 +302,13 @@ class Candidate:
                 "red_flags": q.red_flags,
             },
             "macro_score": round(self.macro_score, 1),
+            "data_quality": {
+                "trustworthy": self.data_quality.trustworthy,
+                "flags": [
+                    {"check": f.check, "message": f.message, "severe": f.severe}
+                    for f in self.data_quality.flags
+                ],
+            },
             "llm": None
             if self.llm is None
             else {

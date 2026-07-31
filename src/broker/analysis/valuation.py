@@ -68,6 +68,22 @@ def build_pe_history(
     return pe if len(pe) >= 60 else None
 
 
+def _winsorize(values: list[float], lower: float = 0.05, upper: float = 0.95) -> list[float]:
+    """Stutzt Extremwerte auf die Randperzentile, statt sie zu entfernen.
+
+    Ein einzelner Titel mit KGV 95 verschiebt den Median einer kleinen Branche
+    spürbar. Die harte Kappung bei PE_CAP fängt nur absurde Werte; hier werden
+    die Ränder auf ein realistisches Maß zurückgeholt, ohne die Stichprobe zu
+    verkleinern — bei acht Vergleichswerten zählt jeder einzelne.
+    """
+    if len(values) < 5:
+        return values  # zu klein, um Ränder sinnvoll zu bestimmen
+    ordered = sorted(values)
+    low = float(np.quantile(ordered, lower))
+    high = float(np.quantile(ordered, upper))
+    return [min(max(v, low), high) for v in values]
+
+
 def sector_median_pe(
     fundamentals: list[Fundamentals], min_peers: int = 4
 ) -> dict[str, float]:
@@ -84,7 +100,7 @@ def sector_median_pe(
         buckets.setdefault(f.sector, []).append(pe)
 
     return {
-        sector: float(median(values))
+        sector: float(median(_winsorize(values)))
         for sector, values in buckets.items()
         if len(values) >= min_peers
     }

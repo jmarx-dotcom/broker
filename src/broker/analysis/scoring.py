@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 
 from broker.config import Weights
-from broker.models import QualityResult, TechnicalResult, ValuationResult
+from broker.models import (
+    DataQualityResult,
+    QualityResult,
+    TechnicalResult,
+    ValuationResult,
+)
 
 
 def combine_scores(
@@ -14,6 +19,7 @@ def combine_scores(
     quality: QualityResult,
     macro_score: float,
     weights: Weights,
+    data_quality: DataQualityResult | None = None,
 ) -> float:
     """Gewichteter Gesamtscore 0-100.
 
@@ -35,5 +41,11 @@ def combine_scores(
     # Qualitätsdämpfung: unter 40 Punkten wird spürbar abgewertet.
     if quality.score < 40:
         base *= 0.75 + 0.25 * (quality.score / 40.0)
+
+    # Datenqualität: Widersprechen sich die Rohdaten, ist der ganze Score
+    # entsprechend weniger wert — ein Titel soll nicht wegen eines falschen
+    # KGV nach oben rutschen.
+    if data_quality is not None:
+        base *= data_quality.penalty
 
     return float(np.clip(base, 0, 100))

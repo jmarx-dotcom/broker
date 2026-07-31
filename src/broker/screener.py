@@ -20,6 +20,7 @@ from broker.analysis import (
     analyze_quality,
     analyze_technical,
     analyze_valuation,
+    check_data_quality,
     combine_scores,
     sector_median_pe,
 )
@@ -185,10 +186,23 @@ class Screener:
             )
             technical = analyze_technical(history, benchmark=benchmark)
             quality = analyze_quality(f)
+            data_quality = check_data_quality(f, history)
             macro_score = regime.score_for(f.sector)
 
+            if data_quality.severe_flags:
+                log.warning(
+                    "%s: Rohdaten widersprüchlich — %s",
+                    ticker,
+                    data_quality.severe_flags[0].message,
+                )
+
             total = combine_scores(
-                valuation, technical, quality, macro_score, self.config.weights
+                valuation,
+                technical,
+                quality,
+                macro_score,
+                self.config.weights,
+                data_quality,
             )
             candidates.append(
                 Candidate(
@@ -197,6 +211,7 @@ class Screener:
                     valuation=valuation,
                     technical=technical,
                     quality=quality,
+                    data_quality=data_quality,
                     macro_score=macro_score,
                     total_score=total,
                 )

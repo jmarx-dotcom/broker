@@ -119,6 +119,7 @@ class YahooProvider:
             country=info.get("country"),
             currency=info.get("currency"),
             market_cap=_num(info.get("marketCap")),
+            shares_outstanding=_num(info.get("sharesOutstanding")),
             trailing_eps=_num(info.get("trailingEps")),
             forward_eps=_num(info.get("forwardEps")),
             trailing_pe=_num(info.get("trailingPE")),
