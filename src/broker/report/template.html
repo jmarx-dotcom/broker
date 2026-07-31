@@ -116,6 +116,7 @@
           <th>Titel</th><th>Sektor</th><th>Score</th><th>KGV</th>
           <th>KGV erw.</th><th>Perzentil</th><th>vs. Branche</th>
           <th>RSI</th><th>zum Hoch</th>
+          {% if journal_runs %}<th title="In wie vielen der letzten Läufe stand der Titel auf der Liste">Läufe</th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -130,6 +131,7 @@
           <td>{{ fmt(c.valuation.pe_vs_sector_median, 2) }}</td>
           <td>{{ fmt(c.technical.rsi14, 0) }}</td>
           <td>{{ pct(c.technical.upside_to_52w_high) }}</td>
+          {% if journal_runs %}<td>{{ appearances.get(c.ticker, 0) or "–" }}</td>{% endif %}
         </tr>
         {% endfor %}
       </tbody>
@@ -158,6 +160,10 @@
       <span class="chip">Qualität {{ "%.0f"|format(c.quality.score) }}</span>
       <span class="chip">Chart {{ "%.0f"|format(c.technical.score) }}</span>
       <span class="chip">Makro {{ "%.0f"|format(c.macro_score) }}</span>
+      {% set seen = appearances.get(c.ticker, 0) %}
+      {% if seen > 1 %}
+        <span class="chip" title="Beständigkeit: mehrfach in Folge auf der Liste">{{ seen }} Läufe in Folge</span>
+      {% endif %}
     </div>
 
     <div class="metrics">
@@ -233,6 +239,16 @@
 
   <footer>
     <p>{{ stats.summary() }}</p>
+    {% if journal_runs %}
+    <p>
+      Journal: {{ journal_runs }} aufgezeichnete Läufe. Die Spalte „Läufe" zeigt,
+      in wie vielen der letzten 20 Durchgänge ein Titel auf der Liste stand — ein
+      Titel, der einmalig aufblitzt und tags darauf verschwindet, geht häufiger
+      auf einen Datenfehler zurück als auf eine echte Fehlbewertung.
+      Mit <code>broker track</code> lässt sich auswerten, wie sich die bisherigen
+      Treffer gegenüber ihrem Index entwickelt haben.
+    </p>
+    {% endif %}
     <p>
       Dieses Dokument ist ein automatisch erzeugtes Rechercheergebnis und
       <strong>keine Anlageberatung</strong>. Die Kennzahlen stammen aus

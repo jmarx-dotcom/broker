@@ -71,6 +71,9 @@ class Config:
     llm_effort: str = "medium"
     cache_dir: Path = Path("cache")
     out_dir: Path = Path("out")
+    #: Wird ins Repository eingecheckt — in GitHub Actions ist das Dateisystem
+    #: nach jedem Lauf weg, ohne Commit lernt das Tool also nie etwas dazu.
+    journal_path: Path = Path("journal/history.jsonl")
     max_candidates: int = 15
     weights: Weights = field(default_factory=Weights)
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -95,5 +98,6 @@ class Config:
             llm_effort=env("BROKER_LLM_EFFORT") or "medium",
             cache_dir=Path(env("BROKER_CACHE_DIR") or "cache"),
             out_dir=Path(env("BROKER_OUT_DIR") or "out"),
+            journal_path=Path(env("BROKER_JOURNAL") or "journal/history.jsonl"),
             max_candidates=int(env("BROKER_MAX_CANDIDATES") or "15"),
         )

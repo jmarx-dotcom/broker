@@ -99,17 +99,35 @@ def cmd_screen(args: argparse.Namespace) -> int:
                 "Kein ANTHROPIC_API_KEY gesetzt — Report ohne LLM-Einordnung."
             )
 
+    # Journal ---------------------------------------------------------------
+    # Vor der Ausgabe, damit die Beständigkeit den aktuellen Lauf einschließt.
+    from broker.journal import Journal
+    from broker.screener import BENCHMARKS
+
+    journal = Journal(config.journal_path)
+    appearances: dict[str, int] = {}
+    if not args.no_journal:
+        written = journal.append(result.candidates, BENCHMARKS)
+        if written:
+            log.info("%d Treffer im Journal festgehalten (%s).", written, journal.path)
+        appearances = journal.appearances()
+
     # Ausgabe --------------------------------------------------------------
     print()
     if not result.candidates:
         print("Keine Treffer über der Score-Schwelle.")
     else:
-        print(f"{'Score':>5}  {'Ticker':<12} {'KGV':>6} {'RSI':>5}  Titel")
-        print("-" * 78)
+        print(f"{'Score':>5}  {'Ticker':<12} {'KGV':>6} {'RSI':>5} {'Läufe':>6}  Titel")
+        print("-" * 82)
         for c in result.candidates:
             pe = "–" if c.valuation.trailing_pe is None else f"{c.valuation.trailing_pe:.1f}"
             rsi = "–" if c.technical.rsi14 is None else f"{c.technical.rsi14:.0f}"
-            print(f"{c.total_score:5.0f}  {c.ticker:<12} {pe:>6} {rsi:>5}  {c.name}")
+            seen = appearances.get(c.ticker, 0)
+            seen_text = f"{seen}" if seen else "–"
+            print(
+                f"{c.total_score:5.0f}  {c.ticker:<12} {pe:>6} {rsi:>5} "
+                f"{seen_text:>6}  {c.name}"
+            )
     print()
     log.info(result.stats.summary())
 
@@ -117,7 +135,13 @@ def cmd_screen(args: argparse.Namespace) -> int:
         from broker.report.html import write_json, write_report
 
         if args.report:
-            path = write_report(result, config.out_dir, universe_label=args.universe)
+            path = write_report(
+                result,
+                config.out_dir,
+                universe_label=args.universe,
+                appearances=appearances,
+                journal_runs=journal.run_count,
+            )
             print(f"HTML-Report: {path}")
         if args.json:
             path = write_json(result, config.out_dir)
@@ -172,6 +196,94 @@ def cmd_universe(args: argparse.Namespace) -> int:
     for entry in entries:
         print(f"{entry.ticker:<12} {entry.index:<10} {entry.region}")
     print(f"\n{len(entries)} Titel", file=sys.stderr)
+    return 0
+
+
+def _print_buckets(title: str, buckets) -> None:
+    from broker.journal import MIN_SAMPLE
+
+    printable = [b for b in buckets if b.sample > 0]
+    if not printable:
+        return
+
+    print(f"\n  {title}")
+    print(f"  {'Gruppe':<28} {'n':>4} {'Median vs. Index':>18} {'Trefferquote':>13}")
+    print("  " + "-" * 66)
+    for bucket in printable:
+        if not bucket.reportable:
+            print(
+                f"  {bucket.label:<28} {bucket.sample:>4} "
+                f"{'zu wenig Daten':>18} {'':>13}"
+            )
+            continue
+        excess = (
+            "–" if bucket.median_excess is None else f"{bucket.median_excess * 100:+.1f} %"
+        )
+        hit = "–" if bucket.hit_rate is None else f"{bucket.hit_rate * 100:.0f} %"
+        print(f"  {bucket.label:<28} {bucket.sample:>4} {excess:>18} {hit:>13}")
+    print(f"  (Gruppen unter {MIN_SAMPLE} Beobachtungen werden nicht ausgewiesen.)")
+
+
+def cmd_track(args: argparse.Namespace) -> int:
+    """Wertet das Journal aus: Wie liefen die bisherigen Treffer?"""
+    from broker.journal import HORIZONS, Journal, evaluate
+
+    config = Config.from_env()
+    journal = Journal(config.journal_path)
+    entries = journal.entries()
+
+    if not entries:
+        print(
+            f"\nNoch kein Journal unter {journal.path}.\n"
+            "Es füllt sich mit jedem Screening-Lauf.\n"
+        )
+        return 0
+
+    first = min(e.date for e in entries)
+    print(
+        f"\nJournal: {len(entries)} Nennungen aus {journal.run_count} Läufen "
+        f"seit {first}"
+    )
+    print(f"Titel insgesamt: {len({e.ticker for e in entries})}")
+
+    if args.list:
+        counts = journal.appearances(lookback_runs=args.lookback)
+        print(f"\nBeständigkeit (letzte {args.lookback} Läufe):")
+        for ticker, count in sorted(counts.items(), key=lambda kv: -kv[1])[:25]:
+            print(f"  {ticker:<12} {count:>3}×")
+        print()
+        return 0
+
+    provider = get_provider(config, use_cache=not args.no_cache)
+    reports = evaluate(journal, provider)
+
+    any_output = False
+    for report in reports:
+        days = HORIZONS[report.horizon]
+        if report.total_observations == 0:
+            print(
+                f"\n── {report.horizon} ({days} Tage) ── "
+                "noch keine Einträge alt genug."
+            )
+            continue
+        any_output = True
+        print(f"\n── {report.horizon} ({days} Tage) ── "
+              f"{report.total_observations} Beobachtungen")
+        _print_buckets("Nach Score", report.by_score)
+        _print_buckets("Nach LLM-Urteil", report.by_verdict)
+        _print_buckets("Nach Chart-Setup", report.by_setup)
+
+    if not any_output:
+        print(
+            "\nNoch nichts auswertbar. Das erste Fenster schließt 30 Tage nach\n"
+            "der ersten Aufzeichnung."
+        )
+    else:
+        print(
+            "\nHinweis: Das ist kein Backtest, sondern eine Vorwärtsmessung ohne\n"
+            "Rückschaufehler. Sie wird erst nach vielen Monaten aussagekräftig —\n"
+            "bis dahin ist jede Zahl hier vor allem eins: eine kleine Stichprobe.\n"
+        )
     return 0
 
 
@@ -254,7 +366,20 @@ def build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--notify", action="store_true", help="Benachrichtigung senden")
     screen.add_argument("--no-llm", action="store_true", help="Ohne LLM-Einordnung")
     screen.add_argument("--no-cache", action="store_true", help="Tagescache ignorieren")
+    screen.add_argument(
+        "--no-journal", action="store_true", help="Treffer nicht im Journal festhalten"
+    )
     screen.set_defaults(func=cmd_screen)
+
+    track = sub.add_parser("track", help="Journal auswerten: wie liefen die Treffer?")
+    track.add_argument(
+        "--list", action="store_true", help="Nur Beständigkeit je Titel auflisten"
+    )
+    track.add_argument(
+        "--lookback", type=int, default=20, help="Läufe für die Beständigkeit"
+    )
+    track.add_argument("--no-cache", action="store_true")
+    track.set_defaults(func=cmd_track)
 
     macro = sub.add_parser("macro", help="Aktuelles Makrobild anzeigen")
     macro.add_argument("--no-cache", action="store_true")

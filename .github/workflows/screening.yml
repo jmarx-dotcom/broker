@@ -18,6 +18,10 @@ jobs:
   screen:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Nötig, um das Journal zurückzuschreiben. In Actions ist das Dateisystem
+    # nach dem Lauf weg — ohne Commit lernt das Tool nie etwas dazu.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +45,22 @@ jobs:
             --universe "${{ inputs.universe || 'europe' }}" \
             ${{ inputs.no_llm && '--no-llm' || '' }} \
             --report --json --notify
+
+      - name: Journal zurückschreiben
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain journal/)" ]; then
+            echo "Journal unverändert — nichts zu committen."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add journal/
+          git commit -m "Journal: Treffer vom $(date -u +%F)"
+          # Der Lauf kann länger dauern als ein zwischenzeitlicher Push;
+          # rebasen statt blind pushen.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Report als Artifact ablegen
         if: always()

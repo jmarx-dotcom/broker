@@ -85,6 +85,47 @@ aktuelle Schlagzeilen — es rechnet nichts nach und gibt keine Empfehlung ab.
 Ergebnis ist eine strukturierte Einordnung mit einem von drei Urteilen:
 `zyklisch-guenstig`, `strukturell-billig` oder `unklar`, plus Konfidenz.
 
+### 6. Journal — die Vorwärtsmessung
+
+Jeder Lauf hält seine Treffer mit Kurs, Datum und allen Teilscores in
+`journal/history.jsonl` fest. Spätere Läufe rechnen aus, wie sich diese Titel
+seither gegenüber ihrem Index entwickelt haben.
+
+Das ist **kein Backtest**, und das ist Absicht. Ein Backtest bräuchte
+Fundamentaldaten zum damaligen Stand; was heute in einer Gratis-Datenbank steht,
+ist die nachträglich korrigierte Fassung. Wer damit rückrechnet, weiß Dinge, die
+zum Kaufzeitpunkt niemand wusste, und bekommt systematisch zu schöne Ergebnisse.
+Hier wird stattdessen nach vorne gemessen — langsamer, aber verzerrungsfrei.
+
+```bash
+broker track           # Auswertung über 1, 3, 6 und 12 Monate
+broker track --list    # nur die Beständigkeit je Titel
+```
+
+Zwei Vorkehrungen gegen Selbstbetrug stecken fest im Code:
+
+- **Entprellung.** Derselbe Titel steht oft wochenlang in Folge auf der Liste.
+  Zählte man jede Nennung, entstünden aus einer einzigen Kursbewegung dreißig
+  scheinbar unabhängige Datenpunkte. Für die Auswertung zählt pro Titel und
+  Kalendermonat nur die erste Nennung.
+- **Feste Auswertungsraster.** Die Gruppen (Score-Bänder, LLM-Urteil,
+  Chart-Setup) stehen im Code fest. Wer so lange nach Schnittmengen sucht, bis
+  eine gut aussieht, findet immer eine. Gruppen unter zehn Beobachtungen werden
+  gar nicht erst ausgewiesen.
+
+Ausgewiesen wird der **Median** der Überrendite, nicht der Mittelwert:
+Aktienrenditen sind stark rechtsschief, ein einzelner Verdoppler würde den
+Mittelwert dominieren.
+
+Aus dem Journal fällt nebenbei die **Beständigkeit** ab — in wie vielen der
+letzten 20 Läufe ein Titel auf der Liste stand. Ein Titel, der einmalig aufblitzt
+und tags darauf verschwindet, geht häufiger auf einen Datenfehler zurück als auf
+eine echte Fehlbewertung.
+
+> Realistische Erwartung: Vor etwa einem Jahr Laufzeit ist hier nichts
+> statistisch belastbar. Die Zahlen davor sind eine kleine Stichprobe, kein
+> Beleg.
+
 ## Konfiguration
 
 Alles über Umgebungsvariablen oder `.env` (siehe `.env.example`).
@@ -123,6 +164,8 @@ broker macro                                   # Makrobild und Sektor-Scores
 broker universe germany                        # Titel einer Gruppe auflisten
 broker notify                                  # Benachrichtigung prüfen
 broker notify --send                           # Testnachricht verschicken
+broker track                                   # Journal auswerten
+broker track --list                            # Beständigkeit je Titel
 broker cache --keep-days 3                     # alte Cache-Tage löschen
 ```
 
@@ -173,7 +216,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-84 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+140 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 
@@ -188,5 +231,7 @@ src/broker/
   analysis/          KGV, Chart, Qualität, Gesamtscore
   macro/             FRED, Regime-Ableitung, Sektor-Sensitivität
   context/           News-Beschaffung, LLM-Einordnung
+  journal.py         Vorwärtsmessung: was wurde wann vorgeschlagen, wie lief es
   report/            HTML-Report und JSON-Export
+journal/history.jsonl  Aufzeichnung (wird eingecheckt, wächst mit jedem Lauf)
 ```

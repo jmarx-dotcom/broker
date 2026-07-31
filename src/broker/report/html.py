@@ -36,7 +36,12 @@ def _verdict_label(verdict: str) -> str:
     return VERDICT_LABELS.get(verdict, verdict)
 
 
-def render_html(result: ScreeningResult, universe_label: str = "") -> str:
+def render_html(
+    result: ScreeningResult,
+    universe_label: str = "",
+    appearances: dict[str, int] | None = None,
+    journal_runs: int = 0,
+) -> str:
     env = Environment(
         loader=FileSystemLoader(TEMPLATE_DIR),
         autoescape=select_autoescape(["html"]),
@@ -48,6 +53,8 @@ def render_html(result: ScreeningResult, universe_label: str = "") -> str:
         stats=result.stats,
         universe_label=universe_label or "—",
         generated=datetime.now().strftime("%d.%m.%Y %H:%M"),
+        appearances=appearances or {},
+        journal_runs=journal_runs,
         fmt=_fmt,
         pct=_pct,
         sector_label=sector_label,
@@ -56,12 +63,18 @@ def render_html(result: ScreeningResult, universe_label: str = "") -> str:
 
 
 def write_report(
-    result: ScreeningResult, out_dir: Path | str, universe_label: str = ""
+    result: ScreeningResult,
+    out_dir: Path | str,
+    universe_label: str = "",
+    appearances: dict[str, int] | None = None,
+    journal_runs: int = 0,
 ) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"screening-{datetime.now():%Y-%m-%d}.html"
-    path.write_text(render_html(result, universe_label), encoding="utf-8")
+    path.write_text(
+        render_html(result, universe_label, appearances, journal_runs), encoding="utf-8"
+    )
     return path
 
 
