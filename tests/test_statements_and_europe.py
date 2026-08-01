@@ -537,6 +537,139 @@ def test_eurostat_client_maps_values_to_periods(monkeypatch):
     assert captured["params"]["format"] == "JSON"
 
 
+def test_eurostat_refuses_to_blend_several_series(monkeypatch):
+    """Zwei Länder in einer Antwort ergeben keine Zeitreihe, sondern ein Gemisch.
+
+    Die alte Auswertung hätte hier stillschweigend die erste Hälfte der Werte
+    genommen und den Rest verworfen — ein Ergebnis, das nach einer sauberen
+    Reihe aussieht und keines ist.
+    """
+    payload = {
+        # geo (2) × time (3), zeilenweise: EA20 zuerst, dann DE.
+        "value": {"0": 6.0, "1": 6.1, "2": 6.2, "3": 3.0, "4": 3.1, "5": 3.2},
+        "id": ["geo", "time"],
+        "size": [2, 3],
+        "dimension": {
+            "geo": {"category": {"index": {"EA20": 0, "DE": 1}}},
+            "time": {"category": {"index": {"2026-04": 0, "2026-05": 1, "2026-06": 2}}},
+        },
+    }
+    monkeypatch.setattr(
+        "broker.macro.europe.requests.get", lambda *a, **k: FakeResponse(payload)
+    )
+    assert EurostatClient().fetch(SPEC) is None
+
+
+def test_eurostat_guard_is_independent_of_axis_order(monkeypatch):
+    """Auch wenn die Zeitachse zuerst steht, bleibt die Antwort mehrdeutig."""
+    from broker.macro.europe import _time_lookup
+
+    payload = {
+        "value": {"0": 6.0, "1": 5.0, "2": 6.1, "3": 5.1},
+        "id": ["time", "sex"],
+        "size": [2, 2],
+        "dimension": {
+            "time": {"category": {"index": {"2026-05": 0, "2026-06": 1}}},
+            "sex": {"category": {"index": {"M": 0, "F": 1}}},
+        },
+    }
+    assert _time_lookup(payload) is None
+
+
+def test_eurostat_single_valued_axes_are_fine():
+    """Sind alle übrigen Achsen auf einen Wert eingegrenzt, passt die Zuordnung."""
+    from broker.macro.europe import _time_lookup
+
+    payload = {
+        "value": {"0": 6.0, "1": 6.1, "2": 6.2},
+        "id": ["geo", "sex", "time"],
+        "size": [1, 1, 3],
+        "dimension": {
+            "time": {"category": {"index": {"2026-04": 0, "2026-05": 1, "2026-06": 2}}},
+        },
+    }
+    lookup = _time_lookup(payload)
+    assert lookup is not None
+    assert [lookup(i) for i in range(3)] == ["2026-04", "2026-05", "2026-06"]
+
+
+def test_time_lookup_without_axis_description_falls_back():
+    """Ohne id/size bleibt nur die Annahme, dass allein die Zeit variiert."""
+    from broker.macro.europe import _time_lookup
+
+    lookup = _time_lookup(EUROSTAT_PAYLOAD)
+    assert lookup is not None
+    assert lookup(0) == "2026-04"
+    assert lookup(2) == "2026-06"
+    assert lookup(9) is None
+
+
+def test_time_lookup_without_time_axis():
+    from broker.macro.europe import _time_lookup
+
+    assert _time_lookup({"value": {"0": 1.0}}) is None
+
+
+def test_eurostat_falls_back_to_alternative_filters(monkeypatch):
+    """Ein unbekannter Code liefert bei Eurostat 200 mit leerer Antwort."""
+    spec = EurostatSpec(
+        "ez_unemployment", "une_rt_m", "Quote", "%",
+        {"geo": "EA20", "age": "TOTAL"},
+        percent=True,
+        fallbacks=({"geo": "EA19", "age": "TOTAL"},),
+    )
+    versuche: list[str] = []
+
+    def fake_get(url, params=None, timeout=None):
+        versuche.append(params["geo"])
+        if params["geo"] == "EA20":
+            return FakeResponse({"value": {}, "dimension": {}})
+        return FakeResponse(EUROSTAT_PAYLOAD)
+
+    monkeypatch.setattr("broker.macro.europe.requests.get", fake_get)
+    series = EurostatClient().fetch(spec)
+
+    assert versuche == ["EA20", "EA19"]
+    assert series is not None and series.value == pytest.approx(103.0)
+
+
+def test_eurostat_stops_at_first_working_filter(monkeypatch):
+    spec = EurostatSpec(
+        "k", "ds", "L", "Index", {"geo": "EA20"},
+        fallbacks=({"geo": "EA19"},),
+    )
+    versuche: list[str] = []
+
+    def fake_get(url, params=None, timeout=None):
+        versuche.append(params["geo"])
+        return FakeResponse(EUROSTAT_PAYLOAD)
+
+    monkeypatch.setattr("broker.macro.europe.requests.get", fake_get)
+    assert EurostatClient().fetch(spec) is not None
+    assert versuche == ["EA20"]  # der Ersatzfilter bleibt ungenutzt
+
+
+def test_eurostat_returns_none_when_every_filter_fails(monkeypatch):
+    spec = EurostatSpec(
+        "k", "ds", "L", "Index", {"geo": "EA20"}, fallbacks=({"geo": "EA19"},)
+    )
+    monkeypatch.setattr(
+        "broker.macro.europe.requests.get",
+        lambda *a, **k: FakeResponse({"value": {}, "dimension": {}}),
+    )
+    assert EurostatClient().fetch(spec) is None
+
+
+def test_unemployment_spec_has_fallbacks():
+    """Die Reihe, die im Live-Lauf ausfiel, darf nicht ohne Ersatz bleiben."""
+    spec = next(s for s in EUROSTAT_SERIES if s.key == "ez_unemployment")
+    assert spec.fallbacks
+    assert len(spec.filter_sets) == len(spec.fallbacks) + 1
+    # Jeder Ersatzsatz belegt dieselben Achsen — ein fehlender Filter machte
+    # die Antwort mehrdimensional.
+    assert all(set(f) == set(spec.filters) for f in spec.fallbacks)
+
+
 def test_eurostat_client_handles_gaps_and_bad_indices(monkeypatch):
     payload = {
         "value": {"0": 100.0, "1": None, "zwei": 99.0, "2": 103.0},

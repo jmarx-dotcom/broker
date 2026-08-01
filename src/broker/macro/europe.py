@@ -45,10 +45,19 @@ class EurostatSpec:
     dataset: str
     label: str
     unit: str
-    #: Filter, damit nur die Zeitachse variiert — sonst ist die Antwort
-    #: mehrdimensional und die Werte lassen sich nicht eindeutig zuordnen.
+    #: Filter, damit nur die Zeitachse variiert — sonst enthält die Antwort
+    #: mehrere Reihen nebeneinander.
     filters: dict[str, str]
     percent: bool = False
+    #: Ersatzfiltersätze, falls der erste nichts liefert. Eurostat verwendet
+    #: je Datensatz eigene Codelisten: derselbe Begriff heißt mal TOTAL, mal
+    #: Y_GE15, und der Euroraum ist je nach Alter der Reihe EA20 oder EA19.
+    #: Ein falscher Wert erzeugt keinen Fehler, sondern eine leere Antwort.
+    fallbacks: tuple[dict[str, str], ...] = ()
+
+    @property
+    def filter_sets(self) -> tuple[dict[str, str], ...]:
+        return (self.filters, *self.fallbacks)
 
 
 @dataclass(frozen=True)
@@ -71,6 +80,16 @@ EUROSTAT_SERIES: tuple[EurostatSpec, ...] = (
         "ez_unemployment", "une_rt_m", "Euroraum-Arbeitslosenquote", "%",
         {"geo": "EA20", "s_adj": "SA", "age": "TOTAL", "sex": "T", "unit": "PC_ACT"},
         percent=True,
+        fallbacks=(
+            # Der Euroraum hieß bis 2023 EA19; ältere Reihen führen ihn so.
+            {"geo": "EA19", "s_adj": "SA", "age": "TOTAL", "sex": "T",
+             "unit": "PC_ACT"},
+            # Manche Datensätze kennen kein TOTAL, sondern nur Altersbänder.
+            {"geo": "EA20", "s_adj": "SA", "age": "Y_GE15", "sex": "T",
+             "unit": "PC_ACT"},
+            {"geo": "EA20", "s_adj": "SA", "age": "Y25-74", "sex": "T",
+             "unit": "PC_ACT"},
+        ),
     ),
     EurostatSpec(
         "ez_gdp", "namq_10_gdp", "Euroraum-BIP (real)", "Index",
@@ -151,22 +170,66 @@ def _parse_period(text: str) -> date | None:
     return None
 
 
+def _time_lookup(payload: dict):
+    """Bildet einen Wertindex auf seine Periode ab.
+
+    JSON-stat legt alle Werte flach in ein Objekt; `id` nennt die Achsen in
+    ihrer Reihenfolge, `size` deren Längen. Der flache Index entspricht genau
+    dann der Position auf der Zeitachse, wenn alle übrigen Achsen die Länge 1
+    haben — dafür sind die Filter da.
+
+    Genau diese Voraussetzung wurde bisher angenommen statt geprüft. Trifft
+    sie nicht zu, enthält die Antwort mehrere Reihen nebeneinander, und die
+    Zuordnung liefert stillschweigend ein Gemisch, das wie eine saubere
+    Zeitreihe aussieht.
+    """
+    index = (
+        payload.get("dimension", {})
+        .get("time", {})
+        .get("category", {})
+        .get("index", {})
+    )
+    if not index:
+        return None
+    by_position = {position: period for period, position in index.items()}
+
+    ids = payload.get("id") or []
+    sizes = payload.get("size") or []
+    if len(ids) == len(sizes) and "time" in ids:
+        extra = [
+            f"{name} ({size})"
+            for name, size in zip(ids, sizes)
+            if name != "time" and int(size) > 1
+        ]
+        if extra:
+            # Nicht auflösbar: Die Werte ließen sich zwar Perioden zuordnen,
+            # aber jede Periode träfe mehrere davon. Lieber abbrechen und den
+            # nächsten Filtersatz probieren.
+            log.warning(
+                "Eurostat-Antwort enthält mehrere Reihen nebeneinander — "
+                "diese Achsen sind nicht auf einen Wert eingegrenzt: %s.",
+                ", ".join(extra),
+            )
+            return None
+
+    return lambda flat: by_position.get(flat)
+
+
 class EurostatClient:
     """Liest Eurostat-Reihen im JSON-stat-Format.
 
-    JSON-stat legt die Werte flach in ein Objekt und die Achsenbeschriftung
-    getrennt daneben. Solange nur die Zeitachse variiert — dafür sind die
-    Filter da — entspricht der Schlüssel im Wertobjekt der Position in der
-    Zeitachse, und beides lässt sich eindeutig zusammenführen.
+    Liefert ein Filtersatz nichts, werden die hinterlegten Ersatzfilter
+    durchprobiert — eine leere Antwort ist bei Eurostat kein Fehler, sondern
+    der Normalfall bei einem Code, den dieser Datensatz nicht kennt.
     """
 
     def __init__(self, cache: DayCache | None = None, timeout: float = 25.0) -> None:
         self.cache = cache or DayCache("cache", enabled=False)
         self.timeout = timeout
 
-    def fetch(self, spec: EurostatSpec) -> MacroSeries | None:
+    def _load(self, spec: EurostatSpec, filters: dict[str, str]) -> list[tuple[date, float]]:
         def load() -> list[tuple[date, float]]:
-            params = {"format": "JSON", "lang": "DE", **spec.filters}
+            params = {"format": "JSON", "lang": "DE", **filters}
             response = requests.get(
                 EUROSTAT_URL.format(dataset=spec.dataset),
                 params=params,
@@ -176,22 +239,14 @@ class EurostatClient:
             payload = response.json()
 
             values = payload.get("value") or {}
-            time_index = (
-                payload.get("dimension", {})
-                .get("time", {})
-                .get("category", {})
-                .get("index", {})
-            )
-            if not values or not time_index:
+            lookup = _time_lookup(payload)
+            if not values or lookup is None:
                 return []
-
-            # index bildet Periode -> Position ab; für die Zuordnung umdrehen.
-            by_position = {position: period for period, position in time_index.items()}
 
             observations: list[tuple[date, float]] = []
             for position, value in values.items():
                 try:
-                    period = by_position.get(int(position))
+                    period = lookup(int(position))
                 except (TypeError, ValueError):
                     continue
                 if period is None or value is None:
@@ -202,24 +257,36 @@ class EurostatClient:
             return observations
 
         try:
-            observations = self.cache.get_or_compute(
-                "eurostat", cache_key(spec.dataset, sorted(spec.filters.items())), load
+            return self.cache.get_or_compute(
+                "eurostat", cache_key(spec.dataset, sorted(filters.items())), load
             )
         except Exception as exc:
             log.warning("Eurostat-Reihe %s nicht abrufbar: %s", spec.dataset, exc)
-            return None
+            return []
 
-        if not observations:
-            # Antwort kam an, enthielt aber nichts Verwertbares. Fast immer ein
-            # Filter, den es so nicht gibt — ohne diese Meldung fiele die Reihe
-            # lautlos aus und niemand würde es merken.
-            log.warning(
-                "Eurostat-Reihe %s lieferte keine Beobachtungen — prüfe die "
-                "Filter %s.", spec.dataset, spec.filters,
-            )
-            return None
+    def fetch(self, spec: EurostatSpec) -> MacroSeries | None:
+        for attempt, filters in enumerate(spec.filter_sets):
+            observations = self._load(spec, filters)
+            if observations:
+                if attempt:
+                    log.info(
+                        "Eurostat-Reihe %s über Ersatzfilter geladen: %s",
+                        spec.dataset, filters,
+                    )
+                return _to_series(
+                    spec.key, spec.label, spec.unit, observations, spec.percent
+                )
 
-        return _to_series(spec.key, spec.label, spec.unit, observations, spec.percent)
+        # Antwort kam an, enthielt aber nichts Verwertbares. Fast immer ein
+        # Code, den dieser Datensatz nicht kennt — ohne diese Meldung fiele die
+        # Reihe lautlos aus und niemand würde es merken.
+        log.warning(
+            "Eurostat-Reihe %s lieferte keine Beobachtungen, auch nicht mit "
+            "%d Ersatzfiltern — prüfe die Codeliste des Datensatzes. Zuletzt "
+            "versucht: %s.",
+            spec.dataset, len(spec.filter_sets) - 1, spec.filter_sets[-1],
+        )
+        return None
 
 
 class EcbClient:

@@ -360,7 +360,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-295 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+304 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 
