@@ -29,6 +29,10 @@ TOLERANCE_SEVERE = 0.35
 #: Marktkapitalisierung reagiert empfindlicher auf Rundung und Zeitversatz.
 MCAP_TOLERANCE_HINT = 0.15
 MCAP_TOLERANCE_SEVERE = 0.50
+#: Bis zu diesem Vielfachen erklären mehrere Aktiengattungen den Unterschied.
+#: Kein Unternehmen im Universum hat mehr als eine Handvoll Gattungen; darüber
+#: ist die Aktienzahl schlicht falsch.
+MCAP_MULTIPLE_SHARE_CLASSES = 5.0
 #: Ein Tagessprung darüber ist auffällig.
 JUMP_THRESHOLD = 0.40
 #: Ab hier sind die Chart-Kennzahlen in jedem Fall unbrauchbar. Der Wert liegt
@@ -76,10 +80,14 @@ def _check_pe(
 def _check_market_cap(
     price: float | None, shares: float | None, market_cap: float | None
 ) -> DataFlag | None:
-    """Kurs mal Aktienzahl muss die Marktkapitalisierung ergeben."""
+    """Kurs mal Aktienzahl muss die Marktkapitalisierung ergeben.
+
+    Die Richtung der Abweichung entscheidet, ob es sich um einen Fehler
+    handelt — siehe die beiden Zweige unten.
+    """
     if price is None or shares is None or market_cap is None:
         return None
-    if shares <= 0 or market_cap <= 0:
+    if shares <= 0 or market_cap <= 0 or price <= 0:
         return None
 
     implied = price * shares
@@ -87,13 +95,56 @@ def _check_market_cap(
     if deviation is None or deviation < MCAP_TOLERANCE_HINT:
         return None
 
+    numbers = (
+        f"Marktkapitalisierung laut Anbieter {market_cap / 1e9:.2f} Mrd., "
+        f"aus Kurs und Aktienzahl errechnet sich {implied / 1e9:.2f} Mrd. "
+        f"({deviation * 100:.0f}% Abweichung)."
+    )
+
+    if market_cap > implied:
+        # Der Anbieter meldet den Wert des ganzen Unternehmens, die Aktienzahl
+        # aber nur für die abgefragte Gattung. Bei deutschen Vorzugsaktien —
+        # Kürzel auf 3, etwa VOW3 oder HEN3 — ist das der Regelfall, und der
+        # Faktor entspricht dann genau dem Verhältnis aller Aktien zu denen
+        # dieser Gattung.
+        #
+        # Folgenlos für die Bewertung: EV/EBITDA und FCF-Rendite setzen den
+        # Unternehmenswert ins Verhältnis zu Unternehmenszahlen, beide Seiten
+        # beziehen sich also aufs ganze Unternehmen. KGV und KBV rechnen
+        # ohnehin je Aktie. Die errechnete Marktkapitalisierung selbst
+        # verwendet der Screener nirgends.
+        multiple = market_cap / implied
+        if multiple <= MCAP_MULTIPLE_SHARE_CLASSES:
+            return DataFlag(
+                check="Marktkapitalisierung",
+                message=(
+                    f"{numbers} Der Anbieter meldet den Wert des ganzen "
+                    f"Unternehmens, die Aktienzahl nur für diese Gattung "
+                    f"(Faktor {multiple:.1f}) — typisch für Titel mit Stamm- "
+                    f"und Vorzugsaktien. Für die Bewertung folgenlos."
+                ),
+                informational=True,
+            )
+        return DataFlag(
+            check="Marktkapitalisierung",
+            message=(
+                f"{numbers} Die gemeldete Marktkapitalisierung ist das "
+                f"{multiple:.0f}-fache des Werts aus Kurs und Aktienzahl. Mit "
+                f"mehreren Aktiengattungen ist das nicht mehr zu erklären — "
+                f"wahrscheinlich ist die Aktienzahl veraltet oder falsch."
+            ),
+            severe=True,
+        )
+
+    # Die gemeldete Marktkapitalisierung ist zu klein. Das trifft anders als
+    # der Fall oben genau die Kennzahlen, die auf ihr aufbauen.
     return DataFlag(
         check="Marktkapitalisierung",
         message=(
-            f"Marktkapitalisierung laut Anbieter {market_cap / 1e9:.2f} Mrd., "
-            f"aus Kurs und Aktienzahl errechnet sich {implied / 1e9:.2f} Mrd. "
-            f"({deviation * 100:.0f}% Abweichung). Häufigste Ursache: Kurs und "
-            f"Marktkapitalisierung in verschiedenen Währungen."
+            f"{numbers} Die gemeldete Marktkapitalisierung ist zu klein für "
+            f"Kurs und Aktienzahl. Häufigste Ursache: beide in verschiedenen "
+            f"Währungen, etwa Pence gegen Pfund. EV/EBITDA und FCF-Rendite "
+            f"sind dann verzerrt."
         ),
         severe=bool(deviation >= MCAP_TOLERANCE_SEVERE),
     )

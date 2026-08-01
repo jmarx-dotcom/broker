@@ -209,6 +209,16 @@ class EurostatClient:
             log.warning("Eurostat-Reihe %s nicht abrufbar: %s", spec.dataset, exc)
             return None
 
+        if not observations:
+            # Antwort kam an, enthielt aber nichts Verwertbares. Fast immer ein
+            # Filter, den es so nicht gibt — ohne diese Meldung fiele die Reihe
+            # lautlos aus und niemand würde es merken.
+            log.warning(
+                "Eurostat-Reihe %s lieferte keine Beobachtungen — prüfe die "
+                "Filter %s.", spec.dataset, spec.filters,
+            )
+            return None
+
         return _to_series(spec.key, spec.label, spec.unit, observations, spec.percent)
 
 
@@ -251,6 +261,13 @@ class EcbClient:
             log.warning("EZB-Reihe %s nicht abrufbar: %s", spec.series_key, exc)
             return None
 
+        if not observations:
+            log.warning(
+                "EZB-Reihe %s lieferte keine Beobachtungen — prüfe die "
+                "Reihenkennung.", spec.series_key,
+            )
+            return None
+
         return _to_series(spec.key, spec.label, spec.unit, observations, spec.percent)
 
 
@@ -281,10 +298,20 @@ def fetch_european_series(cache: DayCache | None = None) -> dict[str, MacroSerie
             as_of=ten.as_of,
         )
 
+    expected = len(EUROSTAT_SERIES) + len(ECB_SERIES)
     if not result:
-        log.info(
+        log.warning(
             "Keine europäischen Makrodaten abrufbar — das Makrobild stützt sich "
             "auf die US-Reihen. Eurostat und EZB brauchen keinen Key; prüfe "
             "gegebenenfalls die Netzwerkverbindung."
+        )
+    else:
+        # Explizit protokollieren, welche Reihen ankamen. Eine fehlende Reihe
+        # sieht im Log sonst genauso aus wie eine erfolgreiche.
+        log.info(
+            "Europäische Makrodaten: %d von %d Reihen (%s).",
+            len(result) - ("ez_yield_curve" in result),
+            expected,
+            ", ".join(sorted(k for k in result if k != "ez_yield_curve")),
         )
     return result

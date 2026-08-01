@@ -181,7 +181,7 @@ stimmt etwas nicht — und man weiß es, ohne die Wahrheit zu kennen.
 |---|---|
 | KGV gegen Kurs/Gewinn | nicht verarbeiteter Aktiensplit, veralteter Gewinn |
 | Erwartetes KGV gegen Kurs/Schätzung | dasselbe für Analystendaten |
-| Marktkapitalisierung gegen Kurs × Aktienzahl | Kennzahlen in verschiedenen Währungen |
+| Marktkapitalisierung gegen Kurs × Aktienzahl | Kennzahlen in verschiedenen Währungen, veraltete Aktienzahl |
 | Alter des letzten Kurses | ausgesetzter Handel, Delisting |
 | Größter Tagessprung | Split-Artefakt oder echter Kurssturz — beides verzerrt die Chart-Kennzahlen |
 
@@ -190,6 +190,30 @@ Score gedämpft (auf 90 % bei Auffälligkeiten, auf 60 % bei echten
 Widersprüchen). Ein stiller Ausschluss würde genau die Fälle verdecken, die man
 sehen will — und ein Titel soll nicht wegen eines falschen KGV nach oben
 rutschen.
+
+**Ein erklärter Sonderfall kostet nichts.** Bei deutschen Vorzugsaktien —
+VOW3, HEN3, DRW3, JUN3, KSB3 — meldet Yahoo die Marktkapitalisierung des
+ganzen Unternehmens, die Aktienzahl aber nur für die Vorzugsgattung. Die
+Prüfung sah darin einen Widerspruch von 50 bis 63 % und strich 40 % vom Score,
+obwohl kein Fehler vorlag: Der Faktor entspricht exakt dem Verhältnis aller
+Aktien zu denen dieser Gattung. Deshalb entscheidet jetzt die **Richtung** der
+Abweichung:
+
+* Gemeldete Marktkapitalisierung **größer** als Kurs × Aktienzahl → mehrere
+  Aktiengattungen. Erscheint als Hinweis im Report, kostet keine Punkte, denn
+  EV/EBITDA und FCF-Rendite setzen Unternehmenswert und Unternehmenszahlen ins
+  Verhältnis — beide Seiten meinen das ganze Unternehmen. Ab dem Fünffachen
+  greift die Erklärung nicht mehr und der Befund wird wieder hart.
+* Gemeldete Marktkapitalisierung **kleiner** → Währungsproblem oder veraltete
+  Zahl. Das verzerrt die Kennzahlen tatsächlich und bleibt ein harter Befund.
+
+Dieselbe Verwechslung steckte in der historischen KGV-Reihe: Wo Yahoo kein
+EPS ausweist, wird es aus Nettogewinn und Aktienzahl gerechnet — der Gewinn des
+ganzen Unternehmens geteilt durch die Aktien einer Gattung ergibt bei VW das
+2,4-fache des echten EPS. Das historische KGV fiel entsprechend zu niedrig aus,
+das aktuelle KGV lag scheinbar über dem gesamten Verlauf, und der Titel bekam
+im Perzentil-Vergleich null Punkte. Jetzt wird die zum Gesamtwert passende
+Aktienzahl verwendet.
 
 ### 8. Journal — die Vorwärtsmessung
 
@@ -336,7 +360,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-284 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+295 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 

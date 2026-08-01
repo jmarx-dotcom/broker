@@ -102,6 +102,46 @@ class TestMarketCapConsistency:
     def test_missing_shares_produce_no_flag(self):
         assert _check_market_cap(50.0, None, 1.0e10) is None
 
+    def test_preference_shares_are_explained_not_penalised(self):
+        """VW-Fall: 37,43 Mrd. gemeldet, 206,2 Mio. Vorzüge zu 74,70 EUR.
+
+        Der Anbieter meldet den Wert des ganzen Unternehmens, die Aktienzahl
+        nur die der Vorzugsgattung. Das ist kein Datenfehler.
+        """
+        flag = _check_market_cap(74.70, 2.062e8, 3.743e10)
+        assert flag is not None
+        assert flag.informational is True
+        assert flag.severe is False
+        assert "Vorzugsaktien" in flag.message
+        assert "2.4" in flag.message  # der Faktor wird benannt
+
+    def test_informational_flag_costs_no_points(self):
+        result = DataQualityResult(flags=[_check_market_cap(74.70, 2.062e8, 3.743e10)])
+        assert result.penalty == 1.0
+        assert result.trustworthy is True
+        assert result.scoring_flags == []
+        # Sichtbar bleibt der Befund trotzdem.
+        assert len(result.flags) == 1
+
+    def test_absurd_multiple_stays_severe(self):
+        """Ab dem Fünffachen erklären Aktiengattungen nichts mehr."""
+        flag = _check_market_cap(50.0, 2.0e8, 1.0e12)
+        assert flag is not None
+        assert flag.severe is True
+        assert flag.informational is False
+        assert "veraltet oder falsch" in flag.message
+
+    def test_reported_cap_too_small_still_severe(self):
+        """Die andere Richtung trifft EV/EBITDA und FCF-Rendite wirklich."""
+        flag = _check_market_cap(50.0, 2.0e8, 1.2e9)
+        assert flag is not None
+        assert flag.severe is True
+        assert flag.informational is False
+
+    def test_share_class_gap_below_tolerance_stays_silent(self):
+        # 10% Unterschied: innerhalb der Toleranz, keine Meldung.
+        assert _check_market_cap(50.0, 2.0e8, 1.1e10) is None
+
 
 class TestStaleness:
     def test_fresh_data_produces_no_flag(self):

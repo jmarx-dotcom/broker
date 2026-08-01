@@ -258,7 +258,7 @@
       <h4>Datenqualität</h4>
       <ul>
         {% for f in c.data_quality.flags %}
-        <li {% if f.severe %}class="flag"{% endif %}>
+        <li {% if f.severe %}class="flag"{% elif f.informational %}class="empty"{% endif %}>
           <strong>{{ f.check }}:</strong> {{ f.message }}
         </li>
         {% endfor %}

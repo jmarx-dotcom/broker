@@ -33,6 +33,35 @@ def _num(value: object) -> float | None:
     return result
 
 
+def share_equivalent(
+    shares: float | None, market_cap: float | None, price: float | None
+) -> float | None:
+    """Aktienzahl, die zum gemeldeten Gesamtwert des Unternehmens passt.
+
+    Bei Titeln mit Stamm- und Vorzugsaktien meldet Yahoo die
+    Marktkapitalisierung des ganzen Unternehmens, `sharesOutstanding` aber nur
+    für die abgefragte Gattung. Wer damit den Gewinn je Aktie ausrechnet, teilt
+    den Gewinn des ganzen Unternehmens durch einen Bruchteil der Aktien und
+    erhält ein Vielfaches des echten EPS — bei VW etwa das 2,4-fache.
+
+    Für die historische KGV-Reihe ist das fatal: Sie fiele um denselben Faktor
+    zu niedrig aus, das aktuelle KGV läge scheinbar über ihrem gesamten
+    Verlauf, und der Titel bekäme im Perzentil-Vergleich null Punkte, obwohl er
+    günstig ist.
+
+    Marktkapitalisierung geteilt durch Kurs ergibt die Zahl der Aktien dieser
+    Gattung, die das ganze Unternehmen wert wäre — und passt damit zum
+    Gesamtgewinn. Liegt sie nicht deutlich über der gemeldeten Aktienzahl,
+    bleibt es bei dieser.
+    """
+    if not market_cap or not price or price <= 0:
+        return shares
+    implied = market_cap / price
+    if shares and implied <= shares * 1.15:
+        return shares
+    return implied
+
+
 class YahooProvider:
     name = "yfinance"
 
@@ -64,17 +93,24 @@ class YahooProvider:
         Yahoo liefert keine EPS-Zeitreihe direkt, aber Nettogewinn und
         Aktienanzahl. EPS = Nettogewinn / Aktien, mit der heutigen Aktienzahl
         als Näherung — Rückkäufe verzerren das leicht, für einen Perzentil-
-        Vergleich reicht es.
+        Vergleich reicht es. Bei mehreren Aktiengattungen muss die Aktienzahl
+        zum Gesamtgewinn passen, siehe `share_equivalent`.
         """
 
         def fetch() -> pd.Series | None:
             try:
                 stock = self._ticker(ticker)
                 stmt = stock.quarterly_income_stmt
-                shares = _num(stock.info.get("sharesOutstanding"))
+                info = stock.info
             except Exception as exc:
                 log.debug("Quartalszahlen für %s nicht verfügbar: %s", ticker, exc)
                 return None
+
+            shares = share_equivalent(
+                _num(info.get("sharesOutstanding")),
+                _num(info.get("marketCap")),
+                _num(info.get("currentPrice")) or _num(info.get("regularMarketPrice")),
+            )
 
             if stmt is None or getattr(stmt, "empty", True) or not shares:
                 return None

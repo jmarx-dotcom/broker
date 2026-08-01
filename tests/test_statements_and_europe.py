@@ -27,6 +27,7 @@ from broker.macro.europe import (
 )
 from broker.macro.regime import bond_yield_for, build_regime
 from broker.models import Fundamentals, MacroRegime, MacroSeries
+from tests.conftest import make_history
 
 
 # --- Abschluss-Kennzahlen ------------------------------------------------
@@ -359,6 +360,71 @@ def test_provider_handles_empty_frames(monkeypatch):
         "quarterly_net_income", "shares_history",
     }
     assert all(v is None for v in data.values())
+
+
+# --- Aktienzahl bei mehreren Gattungen -----------------------------------
+
+
+def test_share_equivalent_uses_company_wide_count_for_preference_shares():
+    """VW: 206,2 Mio. Vorzüge, aber 37,43 Mrd. Gesamtwert bei 74,70 EUR."""
+    from broker.providers.yahoo import share_equivalent
+
+    result = share_equivalent(2.062e8, 3.743e10, 74.70)
+    assert result == pytest.approx(3.743e10 / 74.70)
+    assert result / 2.062e8 == pytest.approx(2.43, abs=0.02)
+
+
+def test_share_equivalent_keeps_reported_count_when_consistent():
+    from broker.providers.yahoo import share_equivalent
+
+    # Eine Gattung: Kurs mal Aktienzahl ergibt die Marktkapitalisierung.
+    assert share_equivalent(2.0e8, 1.0e10, 50.0) == pytest.approx(2.0e8)
+
+
+def test_share_equivalent_tolerates_small_gaps():
+    from broker.providers.yahoo import share_equivalent
+
+    # 10% Zeitversatz zwischen Kurs und Marktkapitalisierung: unverändert.
+    assert share_equivalent(2.0e8, 1.1e10, 50.0) == pytest.approx(2.0e8)
+
+
+def test_share_equivalent_ignores_smaller_implied_count():
+    """Ist die errechnete Zahl kleiner, liegt kein Gattungsproblem vor."""
+    from broker.providers.yahoo import share_equivalent
+
+    assert share_equivalent(2.0e8, 5.0e9, 50.0) == pytest.approx(2.0e8)
+
+
+def test_share_equivalent_falls_back_without_market_cap():
+    from broker.providers.yahoo import share_equivalent
+
+    assert share_equivalent(2.0e8, None, 50.0) == pytest.approx(2.0e8)
+    assert share_equivalent(2.0e8, 1.0e10, None) == pytest.approx(2.0e8)
+    assert share_equivalent(2.0e8, 1.0e10, 0.0) == pytest.approx(2.0e8)
+    assert share_equivalent(None, None, None) is None
+
+
+def test_preference_share_pe_history_matches_quoted_price():
+    """Der eigentliche Schaden: die KGV-Reihe der Gattung.
+
+    Mit der Gattungs-Aktienzahl fällt das historische KGV um den Faktor 2,43
+    zu niedrig aus — das aktuelle KGV läge dann über dem gesamten Verlauf und
+    der Titel bekäme null Punkte, obwohl er günstig ist.
+    """
+    from broker.analysis.valuation import build_pe_history
+    from broker.providers.yahoo import share_equivalent
+
+    net_income = quarters([5.0e8] * 12, end="2026-06-30")
+    history = make_history(days=750, start=74.70, trend=0.0)
+
+    gattung = build_pe_history(history, net_income / 2.062e8)
+    gesamt = build_pe_history(
+        history, net_income / share_equivalent(2.062e8, 3.743e10, 74.70)
+    )
+    assert gattung is not None and gesamt is not None
+    assert float(gesamt.median()) / float(gattung.median()) == pytest.approx(
+        2.43, abs=0.02
+    )
 
 
 # --- Perioden- und Reihenaufbereitung ------------------------------------

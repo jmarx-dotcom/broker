@@ -302,11 +302,17 @@ class DataFlag:
 
     `severe` bedeutet: Die Kennzahlen widersprechen sich so deutlich, dass die
     darauf aufbauende Bewertung nicht belastbar ist.
+
+    `informational` bedeutet das Gegenteil: Der Widerspruch ist erklärt und hat
+    keine Folgen für die Kennzahlen, die der Screener tatsächlich verwendet. Er
+    erscheint im Report, kostet aber keine Punkte. Ohne diese Stufe müsste jeder
+    erklärte Sonderfall entweder verschwiegen oder bestraft werden.
     """
 
     check: str
     message: str
     severe: bool = False
+    informational: bool = False
 
 
 @dataclass
@@ -315,7 +321,12 @@ class DataQualityResult:
 
     @property
     def severe_flags(self) -> list[DataFlag]:
-        return [f for f in self.flags if f.severe]
+        return [f for f in self.flags if f.severe and not f.informational]
+
+    @property
+    def scoring_flags(self) -> list[DataFlag]:
+        """Befunde, die den Score drücken — erklärte Sonderfälle zählen nicht."""
+        return [f for f in self.flags if not f.informational]
 
     @property
     def trustworthy(self) -> bool:
@@ -326,7 +337,7 @@ class DataQualityResult:
         """Faktor auf den Gesamtscore. 1.0 = keine Abwertung."""
         if self.severe_flags:
             return 0.6
-        if self.flags:
+        if self.scoring_flags:
             return 0.9
         return 1.0
 
@@ -476,7 +487,12 @@ class Candidate:
             "data_quality": {
                 "trustworthy": self.data_quality.trustworthy,
                 "flags": [
-                    {"check": f.check, "message": f.message, "severe": f.severe}
+                    {
+                        "check": f.check,
+                        "message": f.message,
+                        "severe": f.severe,
+                        "informational": f.informational,
+                    }
                     for f in self.data_quality.flags
                 ],
             },
