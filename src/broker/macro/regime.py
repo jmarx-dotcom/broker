@@ -57,10 +57,18 @@ def build_regime(series: dict[str, MacroSeries]) -> MacroRegime:
 
     # Zinsniveau: Leitzins bevorzugt, sonst 10-jährige Rendite.
     rate_change = change_3m("fed_funds")
-    if rate_change is None:
-        rate_change = change_3m("us_10y")
+    ez_rate_change = change_3m("ez_policy_rate")
+    if rate_change is not None and ez_rate_change is not None:
+        rate_change = (rate_change + ez_rate_change) / 2.0
+    elif rate_change is None:
+        rate_change = ez_rate_change if ez_rate_change is not None else change_3m("us_10y")
 
     curve = value("yield_curve")
+    ez_curve = value("ez_yield_curve")
+    if curve is not None and ez_curve is not None:
+        curve = (curve + ez_curve) / 2.0
+    elif curve is None:
+        curve = ez_curve
     inflation_change = change_3m("us_cpi")
     unemployment_change = change_3m("us_unemployment")
     oil_change = change_3m("oil_brent")
@@ -101,6 +109,21 @@ def build_regime(series: dict[str, MacroSeries]) -> MacroRegime:
         growth_inputs += 1
     if industrial_change is not None:
         growth_points += float(np.clip(industrial_change / 0.02, -1.0, 1.0))
+        growth_inputs += 1
+    # Europäische Gegenstücke gleichberechtigt: Mehr als die Hälfte des
+    # Universums notiert in Europa, ein rein amerikanisches Wachstumssignal
+    # wäre dafür der falsche Maßstab.
+    ez_industrial = change_3m("ez_industrial_production")
+    if ez_industrial is not None:
+        growth_points += float(np.clip(ez_industrial / 0.02, -1.0, 1.0))
+        growth_inputs += 1
+    ez_unemployment = change_3m("ez_unemployment")
+    if ez_unemployment is not None:
+        growth_points -= float(np.clip(ez_unemployment / 0.5, -1.0, 1.0))
+        growth_inputs += 1
+    ez_gdp = change_3m("ez_gdp")
+    if ez_gdp is not None:
+        growth_points += float(np.clip(ez_gdp / 0.01, -1.0, 1.0)) * 0.5
         growth_inputs += 1
     if sentiment_change is not None:
         growth_points += float(np.clip(sentiment_change / 0.10, -1.0, 1.0)) * 0.5
@@ -209,8 +232,13 @@ def _summarize(
 
 def bond_yield_for(regime: MacroRegime, region: str | None) -> float | None:
     """Passende Anleiherendite als Dezimalzahl (0.042 = 4,2 %)."""
-    key = "ez_10y" if (region or "").upper() not in ("US", "") else "us_10y"
-    series = regime.series.get(key) or regime.series.get("us_10y")
+    if (region or "").upper() in ("US", ""):
+        candidates = ("us_10y",)
+    else:
+        candidates = ("ez_yield_10y", "ez_10y", "us_10y")
+    series = next(
+        (regime.series[k] for k in candidates if k in regime.series), None
+    )
     if series is None or series.value is None:
         return None
     return series.value / 100.0

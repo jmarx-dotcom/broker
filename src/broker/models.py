@@ -44,8 +44,19 @@ class Fundamentals:
     return_on_equity: float | None = None
     profit_margin: float | None = None
 
-    #: Quartals-EPS (Index: Periodenende, Wert: EPS) für die KGV-Historie.
+    #: Aus den Abschlüssen gelesen — nur gefüllt, wenn der Provider sie liefert.
+    ebit: float | None = None
+    interest_expense: float | None = None
+    tax_rate: float | None = None
+    current_assets: float | None = None
+    current_liabilities: float | None = None
+    total_equity: float | None = None
+
+    #: Zeitreihen für Trends (Index: Periodenende).
     quarterly_eps: pd.Series | None = None
+    quarterly_revenue: pd.Series | None = None
+    quarterly_net_income: pd.Series | None = None
+    shares_history: pd.Series | None = None
 
     @property
     def net_debt(self) -> float | None:
@@ -87,6 +98,87 @@ class Fundamentals:
         if self.free_cashflow is None or not self.market_cap:
             return None
         return self.free_cashflow / self.market_cap
+
+    @property
+    def roic(self) -> float | None:
+        """Rendite auf das eingesetzte Kapital.
+
+        Aussagekräftiger als die Eigenkapitalrendite, weil sie sich nicht
+        durch Verschuldung schönen lässt: Wer Eigenkapital durch Schulden
+        ersetzt, hebt den ROE, den ROIC aber nicht.
+        """
+        if self.ebit is None or self.total_equity is None:
+            return None
+        tax = self.tax_rate if self.tax_rate is not None else 0.25
+        nopat = self.ebit * (1.0 - min(max(tax, 0.0), 0.6))
+        invested = self.total_equity + (self.total_debt or 0.0) - (self.total_cash or 0.0)
+        if invested <= 0:
+            return None
+        return nopat / invested
+
+    @property
+    def interest_coverage(self) -> float | None:
+        """Wie oft verdient das Unternehmen seine Zinslast?
+
+        Unter 2 wird es eng: Ein Gewinnrückgang trifft dann direkt die
+        Fähigkeit, Kredite zu bedienen.
+        """
+        if self.ebit is None or not self.interest_expense:
+            return None
+        expense = abs(self.interest_expense)
+        if expense == 0:
+            return None
+        return self.ebit / expense
+
+    @property
+    def current_ratio(self) -> float | None:
+        """Kurzfristige Zahlungsfähigkeit. Unter 1 fehlt Deckung."""
+        if not self.current_assets or not self.current_liabilities:
+            return None
+        if self.current_liabilities <= 0:
+            return None
+        return self.current_assets / self.current_liabilities
+
+    @property
+    def margin_trend(self) -> float | None:
+        """Veränderung der Nettomarge über die verfügbaren Quartale.
+
+        Nicht der Stand, sondern die Richtung: Eine fallende Marge bei
+        gleichbleibendem Umsatz ist ein Frühindikator, den der Gewinn erst
+        mit Verzögerung zeigt.
+        """
+        revenue, income = self.quarterly_revenue, self.quarterly_net_income
+        if revenue is None or income is None or len(revenue) < 6:
+            return None
+        margins = (income / revenue.where(revenue != 0)).dropna()
+        if len(margins) < 6:
+            return None
+        margins = margins.sort_index()
+        half = len(margins) // 2
+        older = float(margins.iloc[:half].mean())
+        newer = float(margins.iloc[half:].mean())
+        return newer - older
+
+    @property
+    def share_dilution(self) -> float | None:
+        """Jährliche Veränderung der Aktienzahl.
+
+        Positiv heißt Verwässerung: Der Gewinn je Aktie wächst langsamer als
+        der Gewinn. Negativ heißt Rückkäufe.
+        """
+        history = self.shares_history
+        if history is None or len(history) < 2:
+            return None
+        history = history.sort_index().dropna()
+        if len(history) < 2 or float(history.iloc[0]) <= 0:
+            return None
+        years = (history.index[-1] - history.index[0]).days / 365.25
+        if years < 0.5:
+            return None
+        total = float(history.iloc[-1]) / float(history.iloc[0])
+        if total <= 0:
+            return None
+        return total ** (1.0 / years) - 1.0
 
 
 @dataclass
@@ -195,6 +287,11 @@ class QualityResult:
     profit_margin: float | None = None
     payout_ratio: float | None = None
     free_cashflow_positive: bool | None = None
+    roic: float | None = None
+    interest_coverage: float | None = None
+    current_ratio: float | None = None
+    margin_trend: float | None = None
+    share_dilution: float | None = None
     red_flags: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -368,6 +465,11 @@ class Candidate:
                 "return_on_equity": q.return_on_equity,
                 "profit_margin": q.profit_margin,
                 "free_cashflow_positive": q.free_cashflow_positive,
+                "roic": q.roic,
+                "interest_coverage": q.interest_coverage,
+                "current_ratio": q.current_ratio,
+                "margin_trend": q.margin_trend,
+                "share_dilution": q.share_dilution,
                 "red_flags": q.red_flags,
             },
             "macro_score": round(self.macro_score, 1),

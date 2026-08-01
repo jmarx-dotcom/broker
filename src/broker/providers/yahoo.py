@@ -102,6 +102,79 @@ class YahooProvider:
 
         return self.cache.get_or_compute("yf_eps", cache_key(ticker), fetch)
 
+    def _statements(self, ticker: str) -> dict:
+        """Liest Bilanz, GuV und Aktienzahl aus den Abschlüssen.
+
+        Yahoo benennt die Zeilen nicht einheitlich und ändert die Bezeichnungen
+        gelegentlich. Deshalb wird für jede Kennzahl eine Liste plausibler
+        Bezeichnungen durchprobiert — fehlt eine, bleibt das Feld leer, statt
+        den ganzen Titel scheitern zu lassen. Bei kleinen Nebenwerten sind
+        diese Daten oft lückenhaft; der Screener bestraft das nicht.
+        """
+
+        def fetch() -> dict:
+            try:
+                stock = self._ticker(ticker)
+                income = stock.income_stmt
+                balance = stock.balance_sheet
+                quarterly_income = stock.quarterly_income_stmt
+            except Exception as exc:
+                log.debug("Abschlüsse für %s nicht verfügbar: %s", ticker, exc)
+                return {}
+
+            def latest(frame, *labels: str) -> float | None:
+                if frame is None or getattr(frame, "empty", True):
+                    return None
+                for label in labels:
+                    if label in frame.index:
+                        series = frame.loc[label].dropna()
+                        if not series.empty:
+                            return _num(series.iloc[0])
+                return None
+
+            def row(frame, *labels: str):
+                if frame is None or getattr(frame, "empty", True):
+                    return None
+                for label in labels:
+                    if label in frame.index:
+                        series = pd.Series(frame.loc[label]).dropna().astype(float)
+                        if not series.empty:
+                            series.index = pd.to_datetime(series.index)
+                            return series.sort_index()
+                return None
+
+            pretax = latest(income, "Pretax Income", "Income Before Tax")
+            tax = latest(income, "Tax Provision", "Income Tax Expense")
+            tax_rate = None
+            if pretax and tax is not None and pretax > 0:
+                tax_rate = max(0.0, min(0.6, tax / pretax))
+
+            return {
+                "ebit": latest(income, "EBIT", "Operating Income", "Total Operating Income As Reported"),
+                "interest_expense": latest(
+                    income, "Interest Expense", "Interest Expense Non Operating",
+                    "Net Interest Income",
+                ),
+                "tax_rate": tax_rate,
+                "current_assets": latest(balance, "Current Assets", "Total Current Assets"),
+                "current_liabilities": latest(
+                    balance, "Current Liabilities", "Total Current Liabilities"
+                ),
+                "total_equity": latest(
+                    balance, "Stockholders Equity", "Total Equity Gross Minority Interest",
+                    "Common Stock Equity",
+                ),
+                "quarterly_revenue": row(quarterly_income, "Total Revenue", "Operating Revenue"),
+                "quarterly_net_income": row(
+                    quarterly_income, "Net Income", "Net Income Common Stockholders"
+                ),
+                "shares_history": row(
+                    balance, "Ordinary Shares Number", "Share Issued", "Common Stock"
+                ),
+            }
+
+        return self.cache.get_or_compute("yf_stmt", cache_key(ticker), fetch)
+
     # -- Provider-Schnittstelle -------------------------------------------
 
     def fundamentals(self, ticker: str) -> Fundamentals:
@@ -137,6 +210,7 @@ class YahooProvider:
             return_on_equity=_num(info.get("returnOnEquity")),
             profit_margin=_num(info.get("profitMargins")),
             quarterly_eps=self._quarterly_eps(ticker),
+            **self._statements(ticker),
         )
 
     def history(self, ticker: str, period: str = "3y") -> PriceHistory:

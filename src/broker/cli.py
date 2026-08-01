@@ -36,15 +36,26 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _load_regime(config: Config, use_cache: bool) -> MacroRegime:
-    if not config.macro_live:
-        return neutral_regime(
-            "Kein FRED_API_KEY gesetzt — der Makro-Teil ist neutral bewertet. "
+    from broker.macro.europe import fetch_european_series
+
+    cache = DayCache(config.cache_dir, use_cache)
+    series: dict = {}
+
+    # Eurostat und EZB brauchen keinen Key — die laufen immer.
+    series.update(fetch_european_series(cache=cache))
+
+    if config.macro_live:
+        series.update(FredClient(config.fred_api_key, cache=cache).fetch_all())
+    else:
+        log.warning(
+            "Kein FRED_API_KEY gesetzt — nur europäische Makrodaten. "
             "Kostenlosen Key unter fredaccount.stlouisfed.org/apikeys anlegen."
         )
-    client = FredClient(config.fred_api_key, cache=DayCache(config.cache_dir, use_cache))
-    series = client.fetch_all()
+
     if not series:
-        return neutral_regime("FRED lieferte keine Daten — Makro-Teil neutral bewertet.")
+        return neutral_regime(
+            "Keine Makrodaten abrufbar — der Makro-Teil ist neutral bewertet."
+        )
     return build_regime(series)
 
 

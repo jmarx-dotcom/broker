@@ -76,6 +76,20 @@ Gewinnentwicklung, Eigenkapitalrendite, Marge, freier Cashflow und
 Ausschüttungsquote. Jedes Problem erscheint als benanntes Warnsignal im Report,
 nicht nur als Punktabzug.
 
+Dazu kommen fünf Kennzahlen, die direkt aus Bilanz und GuV gelesen werden und
+in den Übersichtsdaten von Yahoo nicht enthalten sind:
+
+| Kennzahl | Warum sie zählt |
+|---|---|
+| **ROIC** | Rendite auf das eingesetzte Kapital. Anders als die Eigenkapitalrendite lässt sie sich nicht durch Verschuldung schönen: Wer Eigenkapital durch Kredite ersetzt, hebt den ROE, den ROIC aber nicht. |
+| **Zinsdeckung** | EBIT geteilt durch die Zinslast. Unter 2 trifft ein Gewinnrückgang direkt die Fähigkeit, Kredite zu bedienen. |
+| **Liquiditätsgrad** | Umlaufvermögen zu kurzfristigen Verbindlichkeiten. Unter 1 fehlt Deckung. |
+| **Margentrend** | Die Richtung der Nettomarge über die letzten Quartale, nicht ihr Stand — ein Frühindikator, den der ausgewiesene Gewinn erst verzögert zeigt. |
+| **Verwässerung** | Jährliche Veränderung der Aktienzahl. Wächst sie, wächst der Gewinn je Aktie langsamer als der Gewinn; schrumpft sie, laufen Rückkäufe. |
+
+Wo ein Titel diese Daten nicht hergibt — bei kleinen Nebenwerten ist das die
+Regel — fehlen die Kennzahlen einfach. Der Score bestraft das nicht.
+
 ### 4. Makrokontext
 
 Aus 16 FRED-Zeitreihen — Leitzins, Renditekurve, Inflation und
@@ -84,6 +98,22 @@ Verbrauchervertrauen, Öl, VIX und dem Risikoaufschlag für Hochzinsanleihen —
 werden Zinsrichtung, Kurvenform, Inflations- und Wachstumssignal abgeleitet und
 über eine fest kodierte Sensitivitätstabelle in Sektor-Scores übersetzt. Der
 Teil ist deterministisch und in `macro/regime.py` Zeile für Zeile nachrechenbar.
+
+Weil mehr als die Hälfte des Universums in Europa notiert, wäre ein rein
+amerikanisches Makrobild der falsche Maßstab. Deshalb kommen zwei europäische
+Quellen dazu — beide **ohne API-Key**:
+
+* **Eurostat**: Industrieproduktion, Arbeitslosenquote, BIP und HVPI-Inflation
+  für den Euroraum.
+* **EZB Data Portal**: Hauptrefinanzierungssatz sowie die Renditen zehn- und
+  zweijähriger Euro-Staatsanleihen; daraus wird die europäische Renditekurve
+  abgeleitet.
+
+Zinsrichtung und Kurvenform mitteln beide Wirtschaftsräume, das Wachstumssignal
+zieht europäische und amerikanische Konjunkturdaten gleichberechtigt heran. Für
+die Bewertung gegen die Anleiherendite bekommt ein europäischer Titel die
+Euroraum-Rendite, ein amerikanischer die US-Rendite. Fällt eine Quelle aus,
+fehlt sie im Bild und der Lauf geht weiter.
 
 ### 5. LLM-Einordnung
 
@@ -208,14 +238,16 @@ Alles über Umgebungsvariablen oder `.env` (siehe `.env.example`).
 
 | Variable | Nötig für | Kosten |
 |---|---|---|
-| — | KGV-, Chart-, Qualitätsanalyse | kostenlos |
-| `FRED_API_KEY` | Makrokontext und Sektor-Scores | kostenlos |
+| — | KGV-, Chart-, Qualitätsanalyse, europäischer Makrokontext (Eurostat, EZB) | kostenlos |
+| `FRED_API_KEY` | US-Makrodaten im Sektor-Score | kostenlos |
 | `ANTHROPIC_API_KEY` | LLM-Einordnung | wenige Euro/Monat |
 | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Benachrichtigung aufs Handy | kostenlos |
 | `SMTP_*` | Benachrichtigung per Mail | — |
 
-Ohne `FRED_API_KEY` wird der Makro-Teil neutral bewertet und im Report als
-solcher gekennzeichnet — er täuscht keine Daten vor, die er nicht hat.
+Ohne `FRED_API_KEY` stützt sich das Makrobild allein auf Eurostat und EZB — es
+bleibt also nutzbar, verliert aber die amerikanische Seite. Ist gar keine Quelle
+erreichbar, wird der Makro-Teil neutral bewertet und im Report als solcher
+gekennzeichnet — er täuscht keine Daten vor, die er nicht hat.
 
 Umschließender Leerraum wird bei allen Keys automatisch entfernt. Beim
 Kopieren in Web-Formulare rutscht regelmäßig ein Leerzeichen mit ans Ende, und
@@ -264,6 +296,17 @@ EODHD-Implementierung ist eine neue Datei in `providers/` und eine Zeile in
 Ein Tagescache unter `cache/` verhindert, dass ein wiederholter Lauf dieselben
 tausend Requests noch einmal stellt.
 
+Für den Makrokontext kommen drei weitere Quellen dazu:
+
+| Quelle | Was sie liefert | Key |
+|---|---|---|
+| FRED (St. Louis Fed) | 16 US-Reihen: Leitzins, Renditekurve, Inflation, Arbeitsmarkt, Industrieproduktion, BIP, Öl, VIX, Risikoaufschläge | kostenlos, Registrierung |
+| Eurostat | Euroraum: Industrieproduktion, Arbeitslosenquote, BIP, HVPI | keiner |
+| EZB Data Portal | Euroraum: Leitzins, Renditen 10J und 2J | keiner |
+
+Alle drei sind optional. Fällt eine einzelne Reihe aus, erscheint sie als
+Warnung im Log und die übrigen laufen weiter.
+
 ## Automatischer Betrieb
 
 `.github/workflows/screening.yml` startet werktags einen Lauf und legt den
@@ -293,7 +336,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-226 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+284 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 
@@ -307,7 +350,8 @@ src/broker/
   providers/         Marktdaten (Schnittstelle + yfinance + Cache)
   analysis/          Bewertung, Chart, Qualität, Datenplausibilität,
                      Hebelrisiko, Gesamtscore
-  macro/             FRED, Regime-Ableitung, Sektor-Sensitivität
+  macro/             FRED, Eurostat und EZB, Regime-Ableitung,
+                     Sektor-Sensitivität
   context/           News-Beschaffung, LLM-Einordnung
   journal.py         Vorwärtsmessung: was wurde wann vorgeschlagen, wie lief es
   report/            HTML-Report und JSON-Export

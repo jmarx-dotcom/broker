@@ -72,6 +72,62 @@ def analyze_quality(fundamentals: Fundamentals) -> QualityResult:
         if f.profit_margin < 0:
             red_flags.append("Negative Nettomarge — das Unternehmen schreibt Verluste.")
 
+    # Kapitalrendite auf das eingesetzte Kapital -------------------------
+    # Aussagekräftiger als die Eigenkapitalrendite, weil sie sich nicht durch
+    # Verschuldung schönen lässt.
+    roic = f.roic
+    if roic is not None:
+        components.append((float(np.clip(roic * 600.0, 0, 100)), 0.15))
+        if roic < 0.03:
+            red_flags.append(
+                f"Kapitalrendite von nur {roic * 100:.1f}% — das Geschäft "
+                "verdient kaum mehr als seine Finanzierung kostet."
+            )
+
+    # Margentrend: die Richtung, nicht der Stand --------------------------
+    margin_trend = f.margin_trend
+    if margin_trend is not None:
+        components.append((float(np.clip(50.0 + margin_trend * 1000.0, 0, 100)), 0.10))
+        if margin_trend < -0.02:
+            red_flags.append(
+                f"Nettomarge fällt um {abs(margin_trend) * 100:.1f} Prozentpunkte "
+                "über die letzten Quartale — ein Frühindikator, den der Gewinn "
+                "erst verzögert zeigt."
+            )
+        elif margin_trend > 0.02:
+            notes.append("Nettomarge verbessert sich über die letzten Quartale.")
+
+    # Zinsdeckung und Liquidität: harte Warnungen, keine eigenen Punkte ---
+    coverage = f.interest_coverage
+    if coverage is not None:
+        if coverage < 2.0:
+            red_flags.append(
+                f"Zinsdeckung von nur {coverage:.1f} — ein Gewinnrückgang trifft "
+                "direkt die Fähigkeit, Kredite zu bedienen."
+            )
+        elif coverage > 10:
+            notes.append(f"Zinslast bequem gedeckt (Faktor {coverage:.0f}).")
+
+    current_ratio = f.current_ratio
+    if current_ratio is not None and current_ratio < 1.0:
+        red_flags.append(
+            f"Liquiditätsgrad {current_ratio:.2f} — die kurzfristigen "
+            "Verbindlichkeiten sind nicht durch Umlaufvermögen gedeckt."
+        )
+
+    dilution = f.share_dilution
+    if dilution is not None:
+        if dilution > 0.03:
+            red_flags.append(
+                f"Aktienzahl wächst um {dilution * 100:.1f}% pro Jahr — der "
+                "Gewinn je Aktie wächst entsprechend langsamer als der Gewinn."
+            )
+        elif dilution < -0.02:
+            notes.append(
+                f"Aktienrückkäufe: Aktienzahl sinkt um {abs(dilution) * 100:.1f}% "
+                "pro Jahr."
+            )
+
     # Cashflow und Ausschüttung: keine eigenen Punkte, aber harte Warnungen.
     fcf_positive = None if f.free_cashflow is None else f.free_cashflow > 0
     if fcf_positive is False:
@@ -90,6 +146,7 @@ def analyze_quality(fundamentals: Fundamentals) -> QualityResult:
             notes=["Zu wenig Fundamentaldaten für eine Qualitätsbewertung."],
         )
 
+
     total_weight = sum(w for _, w in components)
     score = sum(s * w for s, w in components) / total_weight
 
@@ -106,6 +163,11 @@ def analyze_quality(fundamentals: Fundamentals) -> QualityResult:
         profit_margin=f.profit_margin,
         payout_ratio=f.payout_ratio,
         free_cashflow_positive=fcf_positive,
+        roic=None if roic is None else round(roic, 4),
+        interest_coverage=None if coverage is None else round(coverage, 1),
+        current_ratio=None if current_ratio is None else round(current_ratio, 2),
+        margin_trend=None if margin_trend is None else round(margin_trend, 4),
+        share_dilution=None if dilution is None else round(dilution, 4),
         red_flags=red_flags,
         notes=notes,
     )
