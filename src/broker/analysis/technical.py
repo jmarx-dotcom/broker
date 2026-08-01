@@ -86,6 +86,67 @@ def annualized_volatility(series: pd.Series, window: int = 60) -> float | None:
     return float(returns.std() * np.sqrt(TRADING_DAYS))
 
 
+def atr(frame: pd.DataFrame, window: int = 14) -> float | None:
+    """Average True Range — mittlere Tagesspanne inklusive Kurslücken.
+
+    Anders als die Standardabweichung der Schlusskurse erfasst die True Range
+    auch Overnight-Gaps. Für die Wahl einer Stopp-Distanz ist das die
+    ehrlichere Größe, und genau dafür wird sie im Hebelmodul gebraucht.
+    """
+    if len(frame) < window + 1 or not {"High", "Low", "Close"} <= set(frame.columns):
+        return None
+    high, low, close = frame["High"], frame["Low"], frame["Close"]
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    value = true_range.ewm(alpha=1 / window, adjust=False).mean().iloc[-1]
+    return None if pd.isna(value) else float(value)
+
+
+def bollinger(series: pd.Series, window: int = 20, sigma: float = 2.0):
+    """Gibt (%B, Bandbreite) zurück.
+
+    %B verortet den Kurs im Band: 0 = unteres Band, 1 = oberes Band. Werte
+    unter 0 bedeuten, dass der Kurs unter das Band gefallen ist. Die
+    Bandbreite misst, wie eng der Markt gerade ist — ein enges Band geht
+    Ausbrüchen oft voraus.
+    """
+    if len(series) < window:
+        return None, None
+    window_values = series.iloc[-window:]
+    middle = float(window_values.mean())
+    deviation = float(window_values.std(ddof=0))
+    if deviation == 0 or middle == 0:
+        return None, None
+    upper, lower = middle + sigma * deviation, middle - sigma * deviation
+    price = float(series.iloc[-1])
+    percent_b = (price - lower) / (upper - lower)
+    return float(percent_b), float((upper - lower) / middle)
+
+
+def stochastic(frame: pd.DataFrame, window: int = 14, smooth: int = 3):
+    """Gibt (%K, %D) zurück — Position im Hoch-Tief-Bereich der letzten Tage.
+
+    Ergänzt den RSI: Der RSI misst die Stärke der Bewegungen, die Stochastik
+    die Lage im Kursband. Beide zugleich im überverkauften Bereich ist ein
+    deutlich verlässlicheres Zeichen als eines von beiden.
+    """
+    if len(frame) < window + smooth or not {"High", "Low", "Close"} <= set(frame.columns):
+        return None, None
+    high = frame["High"].rolling(window).max()
+    low = frame["Low"].rolling(window).min()
+    span = high - low
+    raw = ((frame["Close"] - low) / span.where(span != 0)) * 100.0
+    raw = raw.dropna()
+    if len(raw) < smooth:
+        return None, None
+    percent_k = float(raw.iloc[-1])
+    percent_d = float(raw.iloc[-smooth:].mean())
+    return percent_k, percent_d
+
+
 def volume_trend(volume: pd.Series) -> float | None:
     """Verhältnis 20-Tage- zu 90-Tage-Durchschnittsvolumen."""
     if len(volume) < 90:
@@ -176,6 +237,9 @@ def analyze_technical(
     recent = recent_return(close, 20)
     recent_short = recent_return(close, 5)
     vol = annualized_volatility(close)
+    atr14 = atr(history.frame)
+    percent_b, bandwidth = bollinger(close)
+    stoch_k, stoch_d = stochastic(history.frame)
     vol_trend = volume_trend(history.volume)
     rel_strength = relative_strength(close, benchmark)
 
@@ -235,6 +299,31 @@ def analyze_technical(
             rs_score = 45.0
         components.append((rs_score, 0.15))
 
+    # Bollinger %B: Ein Kurs am oder unter dem unteren Band ist gemessen an
+    # der eigenen jüngsten Schwankungsbreite gedrückt — das ist der Zustand,
+    # in dem ein günstig bewerteter Titel interessant wird.
+    if percent_b is not None:
+        if percent_b <= 0.0:
+            bb_score = 85.0
+        elif percent_b < 0.5:
+            bb_score = 85.0 - percent_b * 60.0
+        else:
+            bb_score = max(0.0, 55.0 - (percent_b - 0.5) * 90.0)
+        components.append((bb_score, 0.10))
+        if percent_b <= 0.0:
+            notes.append("Kurs unter dem unteren Bollinger-Band.")
+
+    # Stochastik als zweite Meinung zum RSI. Nur wenn beide überverkauft sind,
+    # gibt es Zusatzpunkte — ein einzelner Indikator taugt nicht als Beleg.
+    if stoch_k is not None and rsi14 is not None:
+        both_oversold = stoch_k < 20 and rsi14 < 40
+        both_overbought = stoch_k > 80 and rsi14 > 60
+        if both_oversold:
+            components.append((85.0, 0.05))
+            notes.append("RSI und Stochastik zugleich überverkauft.")
+        elif both_overbought:
+            components.append((20.0, 0.05))
+
     # Volumen: anziehendes Volumen bestätigt eine Trendwende.
     if vol_trend is not None:
         components.append((float(np.clip(40.0 + (vol_trend - 1.0) * 100.0, 0, 100)), 0.10))
@@ -261,6 +350,12 @@ def analyze_technical(
         upside_to_52w_high=None if upside is None else round(upside, 3),
         distance_to_52w_low=None if off_low is None else round(off_low, 3),
         annualized_volatility=None if vol is None else round(vol, 3),
+        atr14=None if atr14 is None else round(atr14, 3),
+        atr_percent=None if (atr14 is None or not price) else round(atr14 / price, 4),
+        bollinger_percent_b=None if percent_b is None else round(percent_b, 3),
+        bollinger_bandwidth=None if bandwidth is None else round(bandwidth, 4),
+        stochastic_k=None if stoch_k is None else round(stoch_k, 1),
+        stochastic_d=None if stoch_d is None else round(stoch_d, 1),
         volume_trend=None if vol_trend is None else round(vol_trend, 2),
         relative_strength_6m=None if rel_strength is None else round(rel_strength, 3),
         setup=setup,

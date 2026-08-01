@@ -20,9 +20,10 @@ from broker.analysis import (
     analyze_quality,
     analyze_technical,
     analyze_valuation,
+    assess_leverage,
     check_data_quality,
     combine_scores,
-    sector_median_pe,
+    sector_medians,
 )
 from broker.config import Config
 from broker.macro.regime import bond_yield_for
@@ -123,11 +124,29 @@ class Screener:
 
     # -- Filter -----------------------------------------------------------
 
-    def _passes_hard_filters(self, f: Fundamentals) -> str | None:
+    def _market_cap_eur(self, f: Fundamentals, eur_usd: float | None) -> float | None:
+        """Marktkapitalisierung in Euro, damit der Filter überall gleich streng ist.
+
+        Ohne Umrechnung wäre die 300-Millionen-Schwelle für Dollar-Titel eine
+        andere als für Euro-Titel — je nach Kurs um etwa ein Zehntel verschoben.
+        """
+        if f.market_cap is None:
+            return None
+        currency = (f.currency or "").upper()
+        if currency in ("", "EUR"):
+            return f.market_cap
+        if currency == "USD" and eur_usd:
+            return f.market_cap / eur_usd
+        return f.market_cap  # unbekannte Währung: unverändert, aber nicht verwerfen
+
+    def _passes_hard_filters(
+        self, f: Fundamentals, eur_usd: float | None = None
+    ) -> str | None:
         """Gibt den Ablehnungsgrund zurück oder None, wenn der Titel durchkommt."""
         t = self.config.thresholds
 
-        if f.market_cap is None or f.market_cap < t.min_market_cap:
+        market_cap = self._market_cap_eur(f, eur_usd)
+        if market_cap is None or market_cap < t.min_market_cap:
             return "Marktkapitalisierung zu klein oder unbekannt"
         if f.trailing_pe is None:
             return "Kein KGV verfügbar"
@@ -148,12 +167,18 @@ class Screener:
 
         # Branchenmediane über das komplette Universum, nicht nur die Treffer —
         # sonst vergleicht man günstige Titel nur mit anderen günstigen Titeln.
-        medians = sector_median_pe(list(fundamentals.values()))
+        medians = sector_medians(list(fundamentals.values()))
         log.info("Branchenmediane für %d Sektoren berechnet.", len(medians))
+
+        # DEXUSEU ist USD je EUR — für die Umrechnung von Dollar-Werten.
+        eur_usd_series = regime.series.get("eur_usd")
+        eur_usd = eur_usd_series.value if eur_usd_series else None
+        if eur_usd:
+            log.info("Wechselkurs EUR/USD %.4f für die Größenschwelle.", eur_usd)
 
         survivors: list[str] = []
         for ticker, f in fundamentals.items():
-            reason = self._passes_hard_filters(f)
+            reason = self._passes_hard_filters(f, eur_usd)
             if reason is None:
                 survivors.append(ticker)
             else:
@@ -204,6 +229,14 @@ class Screener:
                 self.config.weights,
                 data_quality,
             )
+            leverage = assess_leverage(
+                ticker,
+                technical.annualized_volatility,
+                days=60,
+                factor=3.0,
+                annual_financing_rate=(bond_yield_for(regime, entry.region) or 0.03) + 0.03,
+            )
+
             candidates.append(
                 Candidate(
                     ticker=ticker,
@@ -212,6 +245,7 @@ class Screener:
                     technical=technical,
                     quality=quality,
                     data_quality=data_quality,
+                    leverage=leverage,
                     macro_score=macro_score,
                     total_score=total,
                 )

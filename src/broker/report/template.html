@@ -157,6 +157,11 @@
       <span class="chip">{{ sector_label(c.fundamentals.sector) }}</span>
       <span class="chip">{{ c.technical.setup }}</span>
       <span class="chip">Bewertung {{ "%.0f"|format(c.valuation.score) }}</span>
+      {% if c.valuation.comparable_measures >= 3 %}
+        <span class="chip" title="Wie viele unabhängige Bewertungsmaße den Titel für günstig halten">
+          {{ c.valuation.cheap_measures }}/{{ c.valuation.comparable_measures }} Maße günstig
+        </span>
+      {% endif %}
       <span class="chip">Qualität {{ "%.0f"|format(c.quality.score) }}</span>
       <span class="chip">Chart {{ "%.0f"|format(c.technical.score) }}</span>
       <span class="chip">Makro {{ "%.0f"|format(c.macro_score) }}</span>
@@ -173,13 +178,19 @@
       <div class="metric"><span>KGV aktuell</span>{{ fmt(c.valuation.trailing_pe, 1) }}</div>
       <div class="metric"><span>KGV erwartet</span>{{ fmt(c.valuation.forward_pe, 1) }}</div>
       <div class="metric"><span>Perzentil eigene Historie</span>{{ fmt(c.valuation.pe_percentile_own_history, 0) }}</div>
-      <div class="metric"><span>Branchenmedian</span>{{ fmt(c.valuation.sector_median_pe, 1) }}</div>
+      <div class="metric"><span>Branchenmedian KGV</span>{{ fmt(c.valuation.sector_median_pe, 1) }}</div>
+      <div class="metric"><span>EV/EBITDA</span>{{ fmt(c.valuation.ev_to_ebitda, 1) }}</div>
+      <div class="metric"><span>KBV</span>{{ fmt(c.valuation.price_to_book, 2) }}</div>
+      <div class="metric"><span>Cashflow-Rendite</span>{{ pct(c.valuation.fcf_yield) }}</div>
       <div class="metric"><span>Kurs</span>{{ fmt(c.technical.price, 2) }} {{ c.fundamentals.currency or "" }}</div>
       <div class="metric"><span>RSI (14)</span>{{ fmt(c.technical.rsi14, 0) }}</div>
       <div class="metric"><span>Unter 52-Wochen-Hoch</span>{{ pct(c.technical.drawdown_from_52w_high) }}</div>
       <div class="metric"><span>Nettoschulden / EBITDA</span>{{ fmt(c.quality.net_debt_to_ebitda, 1) }}</div>
       <div class="metric"><span>Umsatzwachstum</span>{{ pct(c.quality.revenue_growth) }}</div>
       <div class="metric"><span>Rel. Stärke 6M</span>{{ pct(c.technical.relative_strength_6m) }}</div>
+      <div class="metric"><span>ATR (14)</span>{{ pct(c.technical.atr_percent) }}</div>
+      <div class="metric"><span>Bollinger %B</span>{{ fmt(c.technical.bollinger_percent_b, 2) }}</div>
+      <div class="metric"><span>Stochastik %K</span>{{ fmt(c.technical.stochastic_k, 0) }}</div>
     </div>
 
     {% if c.llm and not c.llm.error %}
@@ -211,6 +222,34 @@
     <div class="block">
       <h4>Warnsignale</h4>
       <ul>{% for f in c.quality.red_flags %}<li class="flag">{{ f }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% if c.leverage %}
+    <div class="block">
+      <h4>Hebel — was zur Schwankungsbreite dieses Titels passt</h4>
+      <p>
+        Bei {{ "%.0f"|format(c.leverage.volatility * 100) }} % Volatilität kostet ein
+        Faktor-{{ "%g"|format(c.leverage.factor) }}-Zertifikat über
+        {{ c.leverage.days }} Handelstage rund
+        <strong>{{ "%.0f"|format(c.leverage.total_holding_cost * 100) }} %</strong>,
+        selbst wenn der Basiswert unverändert notiert
+        (Schwankungsverlust {{ "%.0f"|format(c.leverage.drag * 100) }} %,
+        Finanzierung −{{ "%.0f"|format(c.leverage.financing * 100) }} %).
+      </p>
+      {% if c.leverage.knockout_risk %}
+      <ul>
+        {% for label, probability in c.leverage.knockout_risk.items() %}
+        <li>Barriere {{ label }} entfernt: <strong>{{ "%.0f"|format(probability * 100) }} %</strong>
+          Wahrscheinlichkeit, sie innerhalb der Haltedauer zu berühren</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if c.leverage.max_leverage %}
+      <p>Bei 30 % Verlusttoleranz passt maximal Hebel
+         <strong>{{ "%.1f"|format(c.leverage.max_leverage) }}</strong>.</p>
+      {% endif %}
+      {% for note in c.leverage.notes %}<p class="empty">{{ note }}</p>{% endfor %}
     </div>
     {% endif %}
 

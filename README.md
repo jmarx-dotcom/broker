@@ -38,6 +38,14 @@ stehen. "Günstig" ist deshalb immer relativ definiert:
 | Forward- gegen Trailing-KGV | Erwarten Analysten steigende oder fallende Gewinne? |
 | Gewinnrendite gegen Anleiherendite | Gibt es überhaupt eine Prämie fürs Aktienrisiko? |
 
+Seit der Erweiterung fließen drei weitere Maße ein: **EV/EBITDA** (unabhängig
+von Kapitalstruktur und Abschreibungen), die **Cashflow-Rendite** (schwerer zu
+schönen als der Gewinn) und das **KBV** (greift auch dort, wo der Gewinn gerade
+nichts aussagt). Entscheidend ist die **Bewertungsbreite**: Ein Titel, der nur
+beim KGV billig aussieht, hat meist Einmaleffekte im Gewinn — erst wenn alle
+vier Maße unter dem Branchenschnitt liegen, ist die Bewertung wirklich niedrig.
+Der Report weist das als „3/4 Maße günstig" aus.
+
 Steigt das erwartete über das aktuelle KGV, markiert der Report das explizit als
 Value-Falle. Der Branchenmedian wird über das gesamte Universum gebildet, nicht
 nur über die Treffer — sonst vergliche man günstige Titel nur mit anderen
@@ -46,8 +54,8 @@ günstigen Titeln.
 ### 2. Chart-Analyse
 
 Beschränkt auf das, was sich sauber berechnen lässt: Trendstruktur (SMA 50/200),
-Momentum (RSI, MACD), Volatilität, Volumenverhalten und relative Stärke gegen
-den jeweiligen Index. **Keine** Mustererkennung wie Schulter-Kopf-Schulter —
+Momentum (RSI, MACD, Stochastik), Volatilität (realisiert, ATR, Bollinger-Bänder),
+Volumenverhalten und relative Stärke gegen den jeweiligen Index. **Keine** Mustererkennung wie Schulter-Kopf-Schulter —
 dafür gibt es keine belastbare Evidenz.
 
 Der Chart-Teil hat genau eine Aufgabe: unterscheiden, ob ein günstiger Titel
@@ -70,7 +78,9 @@ nicht nur als Punktabzug.
 
 ### 4. Makrokontext
 
-Aus FRED-Zeitreihen (Leitzins, Renditekurve, Inflation, Arbeitsmarkt, Öl, VIX)
+Aus 16 FRED-Zeitreihen — Leitzins, Renditekurve, Inflation und
+Inflationserwartung, Arbeitsmarkt, Industrieproduktion, BIP,
+Verbrauchervertrauen, Öl, VIX und dem Risikoaufschlag für Hochzinsanleihen —
 werden Zinsrichtung, Kurvenform, Inflations- und Wachstumssignal abgeleitet und
 über eine fest kodierte Sensitivitätstabelle in Sektor-Scores übersetzt. Der
 Teil ist deterministisch und in `macro/regime.py` Zeile für Zeile nachrechenbar.
@@ -85,7 +95,48 @@ aktuelle Schlagzeilen — es rechnet nichts nach und gibt keine Empfehlung ab.
 Ergebnis ist eine strukturierte Einordnung mit einem von drei Urteilen:
 `zyklisch-guenstig`, `strukturell-billig` oder `unklar`, plus Konfidenz.
 
-### 6. Plausibilitätsprüfung der Rohdaten
+### 6. Hebelprodukte — Risikorechnung auf den Basiswert
+
+Das Werkzeug **screent keine Hebelprodukte**, und das ist eine bewusste
+Entscheidung. Ein Knock-out hat kein KGV, keine Bilanz und keinen Sektor; sein
+Preis ist eine mechanische Funktion des Basiswerts, der Finanzierungskosten und
+des Emittenten-Spreads. Das Fundamentalmodul ist auf ihn nicht anwendbar, und
+die Produktdaten der deutschen Emittenten liegen in keiner der genutzten
+Quellen — pro Basiswert existieren oft tausende WKNs.
+
+Was es stattdessen tut: Für jeden Treffer ausrechnen, **welcher Hebel zur
+Schwankungsbreite dieses Titels überhaupt passt**.
+
+```bash
+broker leverage SAP.DE --factor 4 --days 60
+```
+
+| Rechnung | Warum sie zählt |
+|---|---|
+| **Volatilitätsdrag** | Ein Faktor-4-Papier verliert *mechanisch* Geld, wenn der Basiswert schwankt — auch bei unverändertem Endstand |
+| **Knock-out-Wahrscheinlichkeit** | Nicht ob der Kurs am Ende unter der Schwelle liegt, sondern ob er sie *unterwegs berührt*. Das ist doppelt so wahrscheinlich |
+| **Maximal sinnvoller Hebel** | aus Volatilität, Haltedauer und Verlusttoleranz |
+| **Finanzierungskosten** | (k−1) × Zins über die Haltedauer, mit dem Zinsniveau aus dem Makromodul |
+
+Zur Größenordnung, bei 60 Handelstagen Haltedauer und Faktor 4:
+
+| Volatilität des Basiswerts | Kosten bei unverändertem Kurs | Knock-out bei 20 % Abstand |
+|---|---|---|
+| 22 % (ruhiger Standardwert) | −11 % | 4 % |
+| 35 % (typische Aktie) | −20 % | 19 % |
+| 60 % (volatiler Nebenwert) | −45 % | 45 % |
+
+Alle Zahlen unterstellen konstante Volatilität und keine Kurssprünge. Echte
+Kurse springen — die tatsächliche Knock-out-Gefahr liegt eher *über* diesen
+Werten. Es sind Untergrenzen, keine Prognosen.
+
+> Ein Hinweis zur Zeitachse: Das Bewertungssignal dieses Screeners zielt auf
+> Monate. Ein Knock-out zahlt täglich Finanzierungskosten und kann durch eine
+> Zwischenbewegung ausgestoppt werden, auch wenn die These am Ende aufgeht.
+> Ein langsames Signal mit einem schnellen Instrument umzusetzen ist keine
+> Verstärkung, sondern eine andere Wette.
+
+### 7. Plausibilitätsprüfung der Rohdaten
 
 Die riskanteste Stelle des ganzen Werkzeugs: Ein falsches KGV erzeugt keinen
 Fehler, sondern einen besonders attraktiven Treffer — genau den, der oben auf
@@ -110,7 +161,7 @@ Widersprüchen). Ein stiller Ausschluss würde genau die Fälle verdecken, die m
 sehen will — und ein Titel soll nicht wegen eines falschen KGV nach oben
 rutschen.
 
-### 7. Journal — die Vorwärtsmessung
+### 8. Journal — die Vorwärtsmessung
 
 Jeder Lauf hält seine Treffer mit Kurs, Datum und allen Teilscores in
 `journal/history.jsonl` fest. Spätere Läufe rechnen aus, wie sich diese Titel
@@ -189,6 +240,7 @@ broker macro                                   # Makrobild und Sektor-Scores
 broker universe germany                        # Titel einer Gruppe auflisten
 broker notify                                  # Benachrichtigung prüfen
 broker notify --send                           # Testnachricht verschicken
+broker leverage SAP.DE --factor 4 --days 60     # welcher Hebel passt?
 broker track                                   # Journal auswerten
 broker track --list                            # Beständigkeit je Titel
 broker cache --keep-days 3                     # alte Cache-Tage löschen
@@ -241,7 +293,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-172 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+226 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 
@@ -253,7 +305,8 @@ src/broker/
   cli.py             Kommandozeile
   universe/          Indexlisten und Loader
   providers/         Marktdaten (Schnittstelle + yfinance + Cache)
-  analysis/          KGV, Chart, Qualität, Datenplausibilität, Gesamtscore
+  analysis/          Bewertung, Chart, Qualität, Datenplausibilität,
+                     Hebelrisiko, Gesamtscore
   macro/             FRED, Regime-Ableitung, Sektor-Sensitivität
   context/           News-Beschaffung, LLM-Einordnung
   journal.py         Vorwärtsmessung: was wurde wann vorgeschlagen, wie lief es

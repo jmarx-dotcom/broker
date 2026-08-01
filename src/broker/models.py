@@ -60,6 +60,34 @@ class Fundamentals:
             return None
         return nd / e
 
+    @property
+    def enterprise_value(self) -> float | None:
+        """Unternehmenswert: Marktkapitalisierung plus Nettoverschuldung.
+
+        Der Vorteil gegenüber der reinen Marktkapitalisierung: Zwei Firmen mit
+        gleichem Börsenwert sind unterschiedlich teuer, wenn die eine schuldenfrei
+        ist und die andere auf Krediten sitzt — ein Käufer übernimmt die Schulden
+        mit.
+        """
+        if self.market_cap is None:
+            return None
+        return self.market_cap + (self.net_debt or 0.0)
+
+    @property
+    def ev_to_ebitda(self) -> float | None:
+        """Robuster als das KGV: unabhängig von Kapitalstruktur und Abschreibungen."""
+        ev, e = self.enterprise_value, self.ebitda
+        if ev is None or e is None or e <= 0 or ev <= 0:
+            return None
+        return ev / e
+
+    @property
+    def fcf_yield(self) -> float | None:
+        """Freier Cashflow je Euro Börsenwert — schwerer zu schönen als der Gewinn."""
+        if self.free_cashflow is None or not self.market_cap:
+            return None
+        return self.free_cashflow / self.market_cap
+
 
 @dataclass
 class PriceHistory:
@@ -99,7 +127,32 @@ class ValuationResult:
     peg: float | None = None
     earnings_yield: float | None = None
     excess_yield_vs_bond: float | None = None
+
+    #: Weitere Bewertungsmaße, jeweils absolut und relativ zur Branche.
+    ev_to_ebitda: float | None = None
+    ev_ebitda_vs_sector: float | None = None
+    fcf_yield: float | None = None
+    fcf_yield_vs_sector: float | None = None
+    price_to_book: float | None = None
+    pb_vs_sector: float | None = None
+
+    #: Wie viele der unabhängigen Maße halten den Titel für günstig?
+    cheap_measures: int = 0
+    comparable_measures: int = 0
+
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def breadth(self) -> float | None:
+        """Anteil der Maße, die "günstig" sagen. Das eigentliche Gütesiegel.
+
+        Ein Titel, der nur beim KGV billig aussieht, hat meist Einmaleffekte im
+        Gewinn. Erst wenn KGV, EV/EBITDA, KBV und Cashflow-Rendite in dieselbe
+        Richtung zeigen, ist die Bewertung wirklich niedrig.
+        """
+        if self.comparable_measures == 0:
+            return None
+        return self.cheap_measures / self.comparable_measures
 
 
 @dataclass
@@ -118,6 +171,12 @@ class TechnicalResult:
     upside_to_52w_high: float | None = None
     distance_to_52w_low: float | None = None
     annualized_volatility: float | None = None
+    atr14: float | None = None
+    atr_percent: float | None = None
+    bollinger_percent_b: float | None = None
+    bollinger_bandwidth: float | None = None
+    stochastic_k: float | None = None
+    stochastic_d: float | None = None
     volume_trend: float | None = None
     relative_strength_6m: float | None = None
     setup: str = "unklar"
@@ -243,6 +302,8 @@ class Candidate:
     macro_score: float = 50.0
     total_score: float = 0.0
     data_quality: DataQualityResult = field(default_factory=DataQualityResult)
+    #: Hebelrechnung auf den Basiswert (analysis.leverage.LeverageAssessment).
+    leverage: Any | None = None
     news: list[NewsItem] = field(default_factory=list)
     llm: LLMContext | None = None
 
@@ -276,6 +337,14 @@ class Candidate:
                 "peg": v.peg,
                 "earnings_yield": v.earnings_yield,
                 "excess_yield_vs_bond": v.excess_yield_vs_bond,
+                "ev_to_ebitda": v.ev_to_ebitda,
+                "ev_ebitda_vs_sector": v.ev_ebitda_vs_sector,
+                "fcf_yield": v.fcf_yield,
+                "fcf_yield_vs_sector": v.fcf_yield_vs_sector,
+                "price_to_book": v.price_to_book,
+                "pb_vs_sector": v.pb_vs_sector,
+                "cheap_measures": v.cheap_measures,
+                "comparable_measures": v.comparable_measures,
                 "notes": v.notes,
             },
             "technical": {

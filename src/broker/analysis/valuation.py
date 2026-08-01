@@ -84,25 +84,59 @@ def _winsorize(values: list[float], lower: float = 0.05, upper: float = 0.95) ->
     return [min(max(v, low), high) for v in values]
 
 
-def sector_median_pe(
+#: Die Bewertungsmaße, für die Branchenmediane gebildet werden.
+#: (Schlüssel, Zugriff, plausible Ober-/Untergrenze, "kleiner ist günstiger")
+METRICS: tuple[tuple[str, str, float, float, bool], ...] = (
+    ("pe", "trailing_pe", 0.0, PE_CAP, True),
+    ("ev_ebitda", "ev_to_ebitda", 0.0, 60.0, True),
+    ("pb", "price_to_book", 0.0, 25.0, True),
+    ("fcf_yield", "fcf_yield", -1.0, 1.0, False),  # größer ist günstiger
+)
+
+
+def _metric_value(f: Fundamentals, attribute: str) -> float | None:
+    value = getattr(f, attribute, None)
+    return value if isinstance(value, (int, float)) else None
+
+
+def sector_medians(
     fundamentals: list[Fundamentals], min_peers: int = 4
-) -> dict[str, float]:
-    """Median-KGV je Sektor über das gesamte Universum.
+) -> dict[str, dict[str, float]]:
+    """Branchenmediane je Bewertungsmaß: {Sektor: {Maß: Median}}.
 
     Sektoren mit zu wenigen Vergleichswerten fallen raus — ein "Branchenmedian"
     aus zwei Titeln ist kein Median, sondern Rauschen.
     """
-    buckets: dict[str, list[float]] = {}
+    buckets: dict[str, dict[str, list[float]]] = {}
     for f in fundamentals:
-        pe = f.trailing_pe
-        if not f.sector or pe is None or pe <= 0 or pe >= PE_CAP:
+        if not f.sector:
             continue
-        buckets.setdefault(f.sector, []).append(pe)
+        for key, attribute, low, high, _ in METRICS:
+            value = _metric_value(f, attribute)
+            if value is None or not (low < value < high):
+                continue
+            buckets.setdefault(f.sector, {}).setdefault(key, []).append(value)
 
+    result: dict[str, dict[str, float]] = {}
+    for sector, metrics in buckets.items():
+        medians = {
+            key: float(median(_winsorize(values)))
+            for key, values in metrics.items()
+            if len(values) >= min_peers
+        }
+        if medians:
+            result[sector] = medians
+    return result
+
+
+def sector_median_pe(
+    fundamentals: list[Fundamentals], min_peers: int = 4
+) -> dict[str, float]:
+    """Nur die KGV-Mediane — schmale Sicht auf sector_medians()."""
     return {
-        sector: float(median(_winsorize(values)))
-        for sector, values in buckets.items()
-        if len(values) >= min_peers
+        sector: metrics["pe"]
+        for sector, metrics in sector_medians(fundamentals, min_peers).items()
+        if "pe" in metrics
     }
 
 
@@ -116,15 +150,52 @@ def _score_ratio_below_one(ratio: float) -> float:
     return max(0.0, min(100.0, 150.0 - 100.0 * ratio))
 
 
+def _compare_to_sector(
+    value: float | None, sector_median: float | None, lower_is_cheaper: bool
+) -> tuple[float | None, float | None, bool | None]:
+    """Gibt (Verhältnis, Score, ist_guenstig) für ein Maß gegen die Branche zurück."""
+    if value is None or sector_median is None or sector_median == 0:
+        return None, None, None
+
+    if lower_is_cheaper:
+        if value <= 0:
+            return None, None, None
+        ratio = value / sector_median
+        return round(ratio, 2), _score_ratio_below_one(ratio), ratio < 1.0
+
+    # Größer ist günstiger (Cashflow-Rendite): Verhältnis umdrehen, damit
+    # dieselbe Punkteskala gilt.
+    if sector_median <= 0:
+        # Branche schreibt im Median negativen Cashflow — ein positiver Wert
+        # ist dann günstig, aber das Verhältnis wäre nicht interpretierbar.
+        return None, (80.0 if value > 0 else 20.0), value > 0
+    ratio = sector_median / value if value > 0 else None
+    if ratio is None:
+        return None, 10.0, False
+    return round(value / sector_median, 2), _score_ratio_below_one(ratio), value > sector_median
+
+
 def analyze_valuation(
     fundamentals: Fundamentals,
     history: PriceHistory,
-    sector_medians: dict[str, float] | None = None,
+    sector_medians: dict[str, float] | dict[str, dict[str, float]] | None = None,
     bond_yield: float | None = None,
 ) -> ValuationResult:
-    """Bewertet einen Titel. Score 0-100, höher = günstiger relativ zum Kontext."""
+    """Bewertet einen Titel. Score 0-100, höher = günstiger relativ zum Kontext.
+
+    `sector_medians` akzeptiert beide Formen: das schmale {Sektor: KGV-Median}
+    und das breite {Sektor: {Maß: Median}}.
+    """
     notes: list[str] = []
     components: list[tuple[float, float]] = []  # (Score, Gewicht)
+
+    # Beide Eingabeformen auf die breite Form vereinheitlichen.
+    medians_by_sector: dict[str, dict[str, float]] = {}
+    for sector, value in (sector_medians or {}).items():
+        medians_by_sector[sector] = (
+            value if isinstance(value, dict) else {"pe": float(value)}
+        )
+    own_medians = medians_by_sector.get(fundamentals.sector or "", {})
 
     trailing_pe = fundamentals.trailing_pe
     forward_pe = fundamentals.forward_pe
@@ -148,7 +219,7 @@ def analyze_valuation(
         result.pe_percentile_own_history = round(percentile, 1)
         if own_median > 0:
             result.pe_vs_own_median = round(trailing_pe / own_median, 2)
-        components.append((_score_percentile(percentile), 0.35))
+        components.append((_score_percentile(percentile), 0.25))
 
         if percentile <= 20:
             notes.append(
@@ -164,13 +235,12 @@ def analyze_valuation(
         notes.append("Zu wenig Gewinnhistorie für einen Vergleich mit dem eigenen KGV.")
 
     # 2) KGV gegen den Branchenmedian ------------------------------------
-    medians = sector_medians or {}
-    sector_pe = medians.get(fundamentals.sector or "")
+    sector_pe = own_medians.get("pe")
     if sector_pe and trailing_pe is not None and sector_pe > 0:
         ratio = trailing_pe / sector_pe
         result.sector_median_pe = round(sector_pe, 1)
         result.pe_vs_sector_median = round(ratio, 2)
-        components.append((_score_ratio_below_one(ratio), 0.25))
+        components.append((_score_ratio_below_one(ratio), 0.20))
         if ratio <= 0.7:
             notes.append(
                 f"KGV {(1 - ratio) * 100:.0f}% unter dem Branchenmedian "
@@ -179,11 +249,70 @@ def analyze_valuation(
     else:
         notes.append("Kein belastbarer Branchenmedian verfügbar.")
 
+    # 2b) Die übrigen Bewertungsmaße gegen die Branche --------------------
+    # Das KGV allein ist anfällig für Einmaleffekte im Gewinn. EV/EBITDA ist
+    # unabhängig von Kapitalstruktur und Abschreibungen, die Cashflow-Rendite
+    # ist schwerer zu schönen, und das KBV greift auch dort, wo der Gewinn
+    # gerade nichts aussagt.
+    cheap_flags: list[bool] = []
+    if trailing_pe is not None and sector_pe:
+        cheap_flags.append(trailing_pe < sector_pe)
+
+    result.ev_to_ebitda = (
+        None if fundamentals.ev_to_ebitda is None else round(fundamentals.ev_to_ebitda, 1)
+    )
+    ratio, score, is_cheap = _compare_to_sector(
+        fundamentals.ev_to_ebitda, own_medians.get("ev_ebitda"), True
+    )
+    result.ev_ebitda_vs_sector = ratio
+    if score is not None:
+        components.append((score, 0.15))
+    if is_cheap is not None:
+        cheap_flags.append(is_cheap)
+
+    result.fcf_yield = (
+        None if fundamentals.fcf_yield is None else round(fundamentals.fcf_yield, 4)
+    )
+    ratio, score, is_cheap = _compare_to_sector(
+        fundamentals.fcf_yield, own_medians.get("fcf_yield"), False
+    )
+    result.fcf_yield_vs_sector = ratio
+    if score is not None:
+        components.append((score, 0.10))
+    if is_cheap is not None:
+        cheap_flags.append(is_cheap)
+
+    result.price_to_book = fundamentals.price_to_book
+    ratio, score, is_cheap = _compare_to_sector(
+        fundamentals.price_to_book, own_medians.get("pb"), True
+    )
+    result.pb_vs_sector = ratio
+    if score is not None:
+        components.append((score, 0.10))
+    if is_cheap is not None:
+        cheap_flags.append(is_cheap)
+
+    result.cheap_measures = sum(1 for flag in cheap_flags if flag)
+    result.comparable_measures = len(cheap_flags)
+    if result.comparable_measures >= 3:
+        if result.cheap_measures == result.comparable_measures:
+            notes.append(
+                f"Alle {result.comparable_measures} vergleichbaren "
+                "Bewertungsmaße liegen unter dem Branchenschnitt — die "
+                "Bewertung ist breit niedrig, nicht nur beim KGV."
+            )
+        elif result.cheap_measures <= 1:
+            notes.append(
+                f"Nur {result.cheap_measures} von {result.comparable_measures} "
+                "Bewertungsmaßen sind günstig. Ein einzelnes niedriges Maß "
+                "geht oft auf Einmaleffekte zurück."
+            )
+
     # 3) Forward gegen Trailing ------------------------------------------
     if trailing_pe is not None and forward_pe is not None:
         ratio = forward_pe / trailing_pe
         # Forward deutlich unter Trailing = Analysten erwarten Gewinnwachstum.
-        components.append((_score_ratio_below_one(ratio), 0.20))
+        components.append((_score_ratio_below_one(ratio), 0.10))
         if ratio <= 0.85:
             notes.append(
                 "Erwartetes KGV klar unter dem aktuellen — Analysten rechnen "
@@ -206,7 +335,7 @@ def analyze_valuation(
             excess = earnings_yield - bond_yield
             result.excess_yield_vs_bond = round(excess, 4)
             # 0% Aufschlag -> 40 Punkte, 6% Aufschlag -> 100 Punkte.
-            components.append((max(0.0, min(100.0, 40.0 + excess * 1000.0)), 0.20))
+            components.append((max(0.0, min(100.0, 40.0 + excess * 1000.0)), 0.10))
             if excess < 0:
                 notes.append(
                     "Gewinnrendite unter der Anleiherendite — für das Aktienrisiko "

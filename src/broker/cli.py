@@ -287,6 +287,70 @@ def cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_leverage(args: argparse.Namespace) -> int:
+    """Rechnet durch, welcher Hebel zu einem Basiswert passt."""
+    from broker.analysis.leverage import assess_leverage
+    from broker.analysis.technical import annualized_volatility
+
+    config = Config.from_env()
+    provider = get_provider(config, use_cache=not args.no_cache)
+
+    try:
+        history = provider.history(args.ticker, period="1y")
+    except Exception as exc:
+        log.error("Kurshistorie für %s nicht abrufbar: %s", args.ticker, exc)
+        return 1
+
+    volatility = annualized_volatility(history.close)
+    assessment = assess_leverage(
+        args.ticker,
+        volatility,
+        days=args.days,
+        factor=args.factor,
+        annual_financing_rate=args.financing_rate,
+        loss_tolerance=args.loss_tolerance,
+    )
+    if assessment is None:
+        print(f"\nZu wenig Kursdaten für {args.ticker}.\n")
+        return 1
+
+    print(f"\n{args.ticker} — Hebelrechnung über {args.days} Handelstage")
+    print(f"Volatilität des Basiswerts: {assessment.volatility * 100:.1f} % p.a.\n")
+
+    print(f"Faktor-{args.factor:g}-Zertifikat, Basiswert unverändert:")
+    print(f"  Verlust allein durch Schwankung  {assessment.drag * 100:+6.1f} %")
+    print(f"  Finanzierungskosten             {-assessment.financing * 100:+6.1f} %")
+    print(f"  Summe                           {assessment.total_holding_cost * 100:+6.1f} %")
+
+    if assessment.knockout_risk:
+        print("\nKnock-out-Wahrscheinlichkeit (Berührung innerhalb der Haltedauer):")
+        for label, probability in assessment.knockout_risk.items():
+            print(f"  Barriere {label:>5} entfernt        {probability * 100:5.1f} %")
+
+    if assessment.safe_barrier_10pct is not None:
+        print(
+            f"\nFür höchstens 10 % Knock-out-Gefahr braucht es "
+            f"{assessment.safe_barrier_10pct * 100:.0f} % Abstand zur Barriere."
+        )
+    if assessment.max_leverage is not None:
+        print(
+            f"Bei {args.loss_tolerance * 100:.0f} % Verlusttoleranz passt maximal "
+            f"Hebel {assessment.max_leverage:.1f}."
+        )
+
+    if assessment.notes:
+        print()
+        for note in assessment.notes:
+            print(f"  · {note}")
+
+    print(
+        "\nModellannahme: konstante Volatilität, keine Drift, keine Kurssprünge.\n"
+        "Echte Kurse springen — die tatsächliche Knock-out-Gefahr liegt eher\n"
+        "über diesen Werten. Es sind Untergrenzen, keine Prognosen.\n"
+    )
+    return 0
+
+
 def cmd_notify(args: argparse.Namespace) -> int:
     """Prüft die Benachrichtigungskanäle, ohne ein Screening zu rechnen."""
     from broker.notify import (
@@ -389,6 +453,23 @@ def build_parser() -> argparse.ArgumentParser:
     universe.add_argument("group", nargs="?", default="all")
     universe.add_argument("--list", action="store_true", help="Gruppen auflisten")
     universe.set_defaults(func=cmd_universe)
+
+    lev = sub.add_parser(
+        "leverage", help="Welcher Hebel passt zu einem Basiswert?"
+    )
+    lev.add_argument("ticker", help="Basiswert, z. B. SAP.DE")
+    lev.add_argument("--factor", type=float, default=3.0, help="Hebel/Faktor")
+    lev.add_argument("--days", type=int, default=60, help="Geplante Haltedauer in Handelstagen")
+    lev.add_argument(
+        "--loss-tolerance", type=float, default=0.30,
+        help="Anteil des Einsatzes, den du zu verlieren bereit bist (0.3 = 30 %%)",
+    )
+    lev.add_argument(
+        "--financing-rate", type=float, default=0.06,
+        help="Jährliche Finanzierungskosten des Emittenten (0.06 = 6 %%)",
+    )
+    lev.add_argument("--no-cache", action="store_true")
+    lev.set_defaults(func=cmd_leverage)
 
     notify_cmd = sub.add_parser(
         "notify", help="Benachrichtigungskanäle prüfen (ohne Screening)"

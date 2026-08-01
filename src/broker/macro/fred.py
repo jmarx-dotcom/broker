@@ -45,6 +45,19 @@ SERIES: tuple[SeriesSpec, ...] = (
     SeriesSpec("oil_brent", "DCOILBRENTEU", "Ölpreis Brent", "USD", percent=False),
     SeriesSpec("eur_usd", "DEXUSEU", "Wechselkurs EUR/USD", "", percent=False),
     SeriesSpec("vix", "VIXCLS", "Volatilitätsindex VIX", "", percent=False),
+    # Konjunktur: Industrieproduktion reagiert schneller als das BIP, das
+    # Verbrauchervertrauen noch etwas früher. Das BIP ist träge, taugt aber
+    # als Bestätigung.
+    SeriesSpec("industrial_production", "INDPRO", "US-Industrieproduktion", "Index", percent=False),
+    SeriesSpec("gdp", "GDPC1", "US-BIP (real)", "Mrd. USD", percent=False),
+    SeriesSpec("consumer_sentiment", "UMCSENT", "US-Verbrauchervertrauen", "Index", percent=False),
+    # Inflationserwartung statt nur gemessener Inflation: Die Breakeven-Rate
+    # sagt, womit der Markt rechnet — für Aktien relevanter als der Rückblick.
+    SeriesSpec("inflation_expectation", "T10YIE", "Inflationserwartung 10J", "%"),
+    # Risikoaufschlag für Hochzinsanleihen. Der zuverlässigste Stressindikator
+    # überhaupt: Er steigt, bevor Aktien fallen, und erfasst geopolitische
+    # Schocks mit, ohne dass man sie einzeln modellieren muss.
+    SeriesSpec("high_yield_spread", "BAMLH0A0HYM2", "Risikoaufschlag Hochzinsanleihen", "%"),
 )
 
 

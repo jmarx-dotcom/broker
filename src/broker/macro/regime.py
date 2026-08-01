@@ -67,7 +67,13 @@ def build_regime(series: dict[str, MacroSeries]) -> MacroRegime:
     vix = value("vix")
 
     rate_direction = _direction(rate_change, 0.25)  # Prozentpunkte
-    inflation_trend = _direction(inflation_change, 0.005)  # 0,5 % in 3 Monaten
+    # Gemessene Inflation blickt zurück, die Breakeven-Rate nach vorn. Wo
+    # beide vorliegen, entscheidet die Erwartung — Aktien preisen sie ein.
+    expectation_change = change_3m("inflation_expectation")
+    if expectation_change is not None:
+        inflation_trend = _direction(expectation_change, 0.15)
+    else:
+        inflation_trend = _direction(inflation_change, 0.005)  # 0,5 % in 3 Monaten
 
     if curve is None:
         curve_shape = "neutral"
@@ -78,12 +84,35 @@ def build_regime(series: dict[str, MacroSeries]) -> MacroRegime:
     else:
         curve_shape = "steil"
 
-    # Wachstumssignal: steigende Arbeitslosigkeit und inverse Kurve als Bremse.
+    # Wachstumssignal aus vier Quellen. Die Industrieproduktion reagiert
+    # schneller als das BIP, das Verbrauchervertrauen noch etwas früher —
+    # deshalb wiegen sie hier schwerer als die trägen Quartalszahlen.
+    industrial_change = change_3m("industrial_production")
+    sentiment_change = change_3m("consumer_sentiment")
+    gdp_change = change_3m("gdp")
+
     growth_points = 0.0
+    growth_inputs = 0
     if unemployment_change is not None:
         growth_points -= float(np.clip(unemployment_change / 0.5, -1.0, 1.0))
+        growth_inputs += 1
     if curve is not None:
         growth_points += float(np.clip(curve / 1.5, -1.0, 1.0)) * 0.5
+        growth_inputs += 1
+    if industrial_change is not None:
+        growth_points += float(np.clip(industrial_change / 0.02, -1.0, 1.0))
+        growth_inputs += 1
+    if sentiment_change is not None:
+        growth_points += float(np.clip(sentiment_change / 0.10, -1.0, 1.0)) * 0.5
+        growth_inputs += 1
+    if gdp_change is not None:
+        growth_points += float(np.clip(gdp_change / 0.01, -1.0, 1.0)) * 0.5
+        growth_inputs += 1
+
+    # Mitteln, damit mehr Datenquellen das Signal nicht automatisch verstärken.
+    if growth_inputs:
+        growth_points /= max(1.0, growth_inputs * 0.6)
+
     if growth_points > 0.3:
         growth_signal = "expansiv"
     elif growth_points < -0.3:
@@ -91,11 +120,33 @@ def build_regime(series: dict[str, MacroSeries]) -> MacroRegime:
     else:
         growth_signal = "neutral"
 
-    if vix is None:
-        risk_appetite = "neutral"
-    elif vix > 25:
+    # Risikoneigung: Der Risikoaufschlag für Hochzinsanleihen ist der
+    # verlässlichere Stressindikator — er steigt oft, bevor Aktien fallen, und
+    # erfasst geopolitische Schocks mit. Der VIX dient als Ergänzung.
+    hy_spread = value("high_yield_spread")
+    hy_change = change_3m("high_yield_spread")
+
+    stress = 0.0
+    if hy_spread is not None:
+        # Historisch: unter 3% entspannt, über 6% angespannt.
+        stress += float(np.clip((hy_spread - 4.0) / 2.5, -1.0, 1.0))
+    if hy_change is not None:
+        stress += float(np.clip(hy_change / 1.0, -1.0, 1.0)) * 0.5
+    if vix is not None:
+        stress += float(np.clip((vix - 18.0) / 12.0, -1.0, 1.0))
+
+    divisor = sum(
+        weight
+        for value_, weight in (
+            (hy_spread, 1.0), (hy_change, 0.5), (vix, 1.0)
+        )
+        if value_ is not None
+    )
+    stress = stress / divisor if divisor else 0.0
+
+    if stress > 0.35:
         risk_appetite = "risk-off"
-    elif vix < 15:
+    elif stress < -0.35:
         risk_appetite = "risk-on"
     else:
         risk_appetite = "neutral"
@@ -107,7 +158,7 @@ def build_regime(series: dict[str, MacroSeries]) -> MacroRegime:
         "inflation_up": _factor(inflation_change, 0.02),
         "growth_up": float(np.clip(growth_points, -1.0, 1.0)),
         "oil_up": _factor(oil_change, 0.30),
-        "risk_off": 0.0 if vix is None else float(np.clip((vix - 18.0) / 12.0, -1.0, 1.0)),
+        "risk_off": stress,
     }
 
     sector_scores: dict[str, float] = {}
