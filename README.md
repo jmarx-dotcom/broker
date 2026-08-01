@@ -281,9 +281,22 @@ einen Key, der im maskierten Log völlig korrekt aussieht.
 Ob die Benachrichtigung funktioniert, prüfst du ohne kompletten Lauf:
 
 ```bash
-broker notify          # zeigt eingerichtete Kanäle, validiert den Bot-Token
+broker notify          # Kanäle, Bot-Token und Chat-ID prüfen
 broker notify --send   # verschickt zusätzlich eine Testnachricht
 ```
+
+Telegram braucht zwei Angaben, und ein gültiger Token sagt nichts über die
+zweite. Deshalb prüft `broker notify` beide: Über `getUpdates` liest es die
+Chats, aus denen der Bot zuletzt gehört hat, und vergleicht sie mit
+`TELEGRAM_CHAT_ID`. Passt die Nummer nicht, nennt die Ausgabe die Nummern, die
+passen würden — dasselbe steht im Log, wenn ein Versand mit
+`chat not found` scheitert.
+
+Bleibt die Liste leer, hat der Bot noch nie eine Nachricht bekommen. Ein Bot
+darf niemanden von sich aus anschreiben: Chat öffnen, einmal **Start** drücken.
+Bei einem **neu angelegten Bot zählt der alte Chat nicht** — Start muss für den
+neuen Bot noch einmal gedrückt werden, auch wenn die eigene Chat-ID dieselbe
+bleibt.
 
 ## Befehle
 
@@ -360,7 +373,7 @@ den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
 pytest
 ```
 
-309 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+318 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 

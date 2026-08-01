@@ -190,6 +190,155 @@ class TestTelegramCheck:
         assert "mein_screener_bot" in message
 
 
+class TestChatDiscovery:
+    """Ein gültiger Token sagt nichts über die Chat-ID — das war der zweite
+    Fehler in Folge, den erst ein fehlgeschlagener Versand offenbart hat."""
+
+    @staticmethod
+    def updates_response(updates):
+        class Response:
+            ok = True
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"ok": True, "result": updates}
+
+        return Response()
+
+    def test_reads_chat_ids_and_names(self, monkeypatch):
+        updates = [
+            {
+                "message": {
+                    "chat": {
+                        "id": 123456789,
+                        "type": "private",
+                        "first_name": "Jan",
+                        "last_name": "Marx",
+                    }
+                }
+            },
+            {"message": {"chat": {"id": -100999, "type": "group", "title": "Redaktion"}}},
+        ]
+        monkeypatch.setattr(
+            notify_module.requests, "get", lambda *a, **k: self.updates_response(updates)
+        )
+        assert notify_module.discover_chats("123:ABC") == [
+            ("-100999", "Redaktion"),
+            ("123456789", "Jan Marx"),
+        ]
+
+    def test_deduplicates_repeated_messages(self, monkeypatch):
+        updates = [
+            {"message": {"chat": {"id": 42, "type": "private", "first_name": "Jan"}}},
+            {"message": {"chat": {"id": 42, "type": "private", "first_name": "Jan"}}},
+        ]
+        monkeypatch.setattr(
+            notify_module.requests, "get", lambda *a, **k: self.updates_response(updates)
+        )
+        assert notify_module.discover_chats("123:ABC") == [("42", "Jan")]
+
+    def test_reads_edited_messages_and_channel_posts(self, monkeypatch):
+        updates = [
+            {"edited_message": {"chat": {"id": 1, "type": "private", "username": "a"}}},
+            {"channel_post": {"chat": {"id": 2, "type": "channel", "title": "Kanal"}}},
+        ]
+        monkeypatch.setattr(
+            notify_module.requests, "get", lambda *a, **k: self.updates_response(updates)
+        )
+        assert notify_module.discover_chats("123:ABC") == [("1", "a"), ("2", "Kanal")]
+
+    def test_survives_unexpected_payloads(self, monkeypatch):
+        for payload in ([], [{}], ["quatsch"], [{"message": {}}], {"nicht": "liste"}):
+            monkeypatch.setattr(
+                notify_module.requests,
+                "get",
+                lambda *a, **k: self.updates_response(payload),
+            )
+            assert notify_module.discover_chats("123:ABC") == []
+
+    def test_survives_network_error(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("kein Netz")
+
+        monkeypatch.setattr(notify_module.requests, "get", boom)
+        assert notify_module.discover_chats("123:ABC") == []
+
+    def test_check_confirms_matching_chat_id(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+        def fake_get(url, *a, **k):
+            if "getUpdates" in url:
+                return self.updates_response(
+                    [{"message": {"chat": {"id": 42, "type": "private", "first_name": "Jan"}}}]
+                )
+            return self.updates_response({"username": "screener_bot"})
+
+        monkeypatch.setattr(notify_module.requests, "get", fake_get)
+        ok, message = check_telegram()
+        assert ok is True
+        assert "bestätigt" in message and "Jan" in message
+
+    def test_check_names_the_actual_chat_ids_on_mismatch(self, monkeypatch):
+        """Der Kern: nicht 'ID falsch', sondern welche ID richtig wäre."""
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+
+        def fake_get(url, *a, **k):
+            if "getUpdates" in url:
+                return self.updates_response(
+                    [{"message": {"chat": {"id": 42, "type": "private", "first_name": "Jan"}}}]
+                )
+            return self.updates_response({"username": "screener_bot"})
+
+        monkeypatch.setattr(notify_module.requests, "get", fake_get)
+        ok, message = check_telegram()
+        assert ok is False
+        assert "42 (Jan)" in message
+
+    def test_check_explains_silence(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+        def fake_get(url, *a, **k):
+            if "getUpdates" in url:
+                return self.updates_response([])
+            return self.updates_response({"username": "screener_bot"})
+
+        monkeypatch.setattr(notify_module.requests, "get", fake_get)
+        ok, message = check_telegram()
+        # Kein Fehler — nur nicht überprüfbar. Der Token ist ja in Ordnung.
+        assert ok is True
+        assert "Start" in message and "screener_bot" in message
+
+    def test_failed_send_reports_available_chats(self, monkeypatch, caplog):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+
+        class Rejected:
+            ok = False
+            status_code = 400
+
+            @staticmethod
+            def json():
+                return {"description": "Bad Request: chat not found"}
+
+        monkeypatch.setattr(notify_module.requests, "post", lambda *a, **k: Rejected())
+        monkeypatch.setattr(
+            notify_module.requests,
+            "get",
+            lambda *a, **k: self.updates_response(
+                [{"message": {"chat": {"id": 42, "type": "private", "first_name": "Jan"}}}]
+            ),
+        )
+
+        with caplog.at_level("ERROR"):
+            assert notify_module.send_telegram("Test") is False
+        assert "chat not found" in caplog.text
+        assert "42 (Jan)" in caplog.text
+
+
 class TestOutcomeDataclass:
     def test_defaults_are_independent_between_instances(self):
         first, second = NotificationOutcome(), NotificationOutcome()

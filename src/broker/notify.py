@@ -59,6 +59,73 @@ def telegram_configured() -> bool:
     return bool(env("TELEGRAM_BOT_TOKEN") and env("TELEGRAM_CHAT_ID"))
 
 
+def discover_chats(token: str) -> list[tuple[str, str]]:
+    """Listet die Chats, aus denen der Bot zuletzt Nachrichten bekommen hat.
+
+    Telegram hält eingegangene Nachrichten rund 24 Stunden vor. Wer dem Bot
+    einmal geschrieben hat, findet hier seine Chat-ID — das erspart die Suche
+    danach, welche Nummer in TELEGRAM_CHAT_ID gehört.
+
+    Leere Liste heißt: Der Bot hat noch nie eine Nachricht erhalten. Genau
+    dann darf er auch keine verschicken.
+    """
+    try:
+        response = requests.get(f"{TELEGRAM_API}/bot{token}/getUpdates", timeout=20)
+        updates = response.json().get("result", []) if response.ok else []
+    except Exception as exc:
+        log.debug("getUpdates nicht abrufbar: %s", exc)
+        return []
+
+    chats: dict[str, str] = {}
+    for update in updates if isinstance(updates, list) else []:
+        if not isinstance(update, dict):
+            continue
+        message = (
+            update.get("message")
+            or update.get("edited_message")
+            or update.get("channel_post")
+            or {}
+        )
+        chat = message.get("chat") or {}
+        if not isinstance(chat, dict):
+            continue
+        chat_id = chat.get("id")
+        if chat_id is None:
+            continue
+        label = (
+            chat.get("title")
+            or " ".join(
+                part for part in (chat.get("first_name"), chat.get("last_name")) if part
+            )
+            or chat.get("username")
+            or chat.get("type")
+            or "?"
+        )
+        chats[str(chat_id)] = label
+    return sorted(chats.items())
+
+
+def _log_chat_hint(token: str, chat_id: str) -> None:
+    """Sagt bei 'chat not found', welche IDs tatsächlich in Frage kommen."""
+    chats = discover_chats(token)
+    if not chats:
+        log.error(
+            "Der Bot hat noch nie eine Nachricht erhalten. Ein Bot darf "
+            "niemanden von sich aus anschreiben — öffne in Telegram den Chat "
+            "mit deinem Bot und drücke einmal Start. Wichtig: Bei einem neu "
+            "angelegten Bot zählt der alte Chat nicht, Start muss für den "
+            "neuen Bot noch einmal gedrückt werden."
+        )
+        return
+
+    log.error(
+        "Eingestellt ist TELEGRAM_CHAT_ID=%s. Der Bot hat zuletzt aus diesen "
+        "Chats gehört: %s. Trage die passende Nummer als Secret ein.",
+        chat_id,
+        "; ".join(f"{cid} ({label})" for cid, label in chats),
+    )
+
+
 def send_telegram(text: str) -> bool:
     token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
@@ -94,11 +161,7 @@ def send_telegram(text: str) -> bool:
             TELEGRAM_API,
         )
     elif response.status_code in (400, 403):
-        log.error(
-            "Häufigste Ursache: Du hast dem Bot noch nie geschrieben. Ein Bot "
-            "darf niemanden von sich aus anschreiben — öffne den Chat mit "
-            "deinem Bot und drücke einmal Start."
-        )
+        _log_chat_hint(token, chat_id)
     return False
 
 
@@ -122,7 +185,25 @@ def check_telegram() -> tuple[bool, str]:
         )
 
     name = response.json().get("result", {}).get("username", "?")
-    return True, f"Token gültig, Bot: @{name}"
+    message = f"Token gültig, Bot: @{name}"
+
+    # Der Token allein sagt nichts über die Chat-ID. Beides zusammen zu prüfen
+    # spart den Umweg über einen fehlgeschlagenen Versand.
+    chat_id = env("TELEGRAM_CHAT_ID")
+    chats = dict(discover_chats(token))
+    if not chats:
+        return True, (
+            f"{message}\nChat-ID {chat_id} nicht überprüfbar: Der Bot hat noch "
+            "nie eine Nachricht erhalten. Öffne den Chat mit @"
+            f"{name} und drücke einmal Start."
+        )
+    if chat_id in chats:
+        return True, f"{message}\nChat-ID {chat_id} bestätigt ({chats[chat_id]})."
+    return False, (
+        f"{message}\nChat-ID {chat_id} taucht in den letzten Nachrichten nicht "
+        "auf. Der Bot hat zuletzt aus diesen Chats gehört: "
+        + "; ".join(f"{cid} ({label})" for cid, label in sorted(chats.items()))
+    )
 
 
 # -- E-Mail ----------------------------------------------------------------
