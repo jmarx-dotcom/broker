@@ -346,10 +346,20 @@ Warnung im Log und die übrigen laufen weiter.
 
 ## Automatischer Betrieb
 
-`.github/workflows/screening.yml` startet werktags einen Lauf und legt den
-Report als Artifact ab. Die Keys gehören als GitHub Secrets hinterlegt, nicht in
-den Code. Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und
-`TELEGRAM_CHAT_ID` als Secrets setzen.
+`.github/workflows/screening.yml` startet werktags um 18:30 UTC einen Lauf über
+das **gesamte** Universum (`all`, rund 680 Titel) und legt den Report als
+Artifact ab. Die Keys gehören als GitHub Secrets hinterlegt, nicht in den Code.
+Für Benachrichtigungen zusätzlich `TELEGRAM_BOT_TOKEN` und `TELEGRAM_CHAT_ID`
+als Secrets setzen.
+
+Die Universumsgröße kostet Laufzeit, aber kaum Geld: `max_candidates` deckelt
+die Trefferliste bei 15, und nur diese 15 gehen ans Modell. Der Sprung von
+`europe` auf `all` verlängert einen Lauf von rund viereinhalb auf etwa acht
+Minuten, die LLM-Kosten bleiben gleich.
+
+Der Zeitplan übergibt keine Eingaben — über das Universum des täglichen Laufs
+entscheidet deshalb der Ersatzwert in der `run`-Zeile, nicht der `default` unter
+`workflow_dispatch`. Beide stehen auf `all`; wer das ändert, muss beide ändern.
 
 ## Grenzen
 

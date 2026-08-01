@@ -8,7 +8,7 @@ on:
     inputs:
       universe:
         description: "Universum (dax, germany, europe, sp500, all …)"
-        default: "europe"
+        default: "all"
       no_llm:
         description: "Ohne LLM-Einordnung laufen"
         type: boolean
@@ -40,9 +40,12 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        # Der Zeitplan übergibt keine Eingaben, deshalb entscheidet hier der
+        # Ersatzwert über das Universum des täglichen Laufs. Er stand auf
+        # 'europe' — der S&P 500 war damit vom automatischen Lauf ausgenommen.
         run: |
           broker screen \
-            --universe "${{ inputs.universe || 'europe' }}" \
+            --universe "${{ inputs.universe || 'all' }}" \
             ${{ inputs.no_llm && '--no-llm' || '' }} \
             --report --json --notify
 
