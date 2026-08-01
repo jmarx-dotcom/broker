@@ -433,3 +433,159 @@ class TestRoundTrip:
         assert entry.recorded_on == date(2026, 3, 17)
         assert entry.llm_verdict == "zyklisch-guenstig"
         assert entry.setup == "Bodenbildung nach Rücksetzer"
+
+
+class TestControlGroup:
+    """Das Journal hielt bisher nur die Treffer fest.
+
+    Damit ließ sich zeigen, wie die Vorschläge gelaufen sind — aber nicht, ob
+    die Auswahl überhaupt etwas taugt. Dafür braucht es die aussortierten
+    Titel als Vergleichsmaßstab.
+    """
+
+    def test_draws_only_from_rejected_titles(self):
+        from broker.screener import draw_control_group
+
+        scored = [make_candidate(f"HIT{i}", score=70.0) for i in range(5)]
+        scored += [make_candidate(f"OUT{i}", score=40.0) for i in range(20)]
+
+        control = draw_control_group(scored, threshold=55.0, size=8)
+        assert len(control) == 8
+        assert all(c.total_score < 55.0 for c in control)
+        assert all(c.ticker.startswith("OUT") for c in control)
+
+    def test_same_day_draws_the_same_group(self):
+        """Sonst könnte man neu würfeln, bis die Kontrollgruppe passt."""
+        from broker.screener import draw_control_group
+
+        scored = [make_candidate(f"OUT{i}", score=40.0) for i in range(50)]
+        tag = date(2026, 8, 1)
+        first = draw_control_group(scored, 55.0, size=10, run_date=tag)
+        second = draw_control_group(scored, 55.0, size=10, run_date=tag)
+        assert [c.ticker for c in first] == [c.ticker for c in second]
+
+    def test_different_days_draw_different_groups(self):
+        from broker.screener import draw_control_group
+
+        scored = [make_candidate(f"OUT{i}", score=40.0) for i in range(50)]
+        first = draw_control_group(scored, 55.0, size=10, run_date=date(2026, 8, 1))
+        second = draw_control_group(scored, 55.0, size=10, run_date=date(2026, 8, 2))
+        assert [c.ticker for c in first] != [c.ticker for c in second]
+
+    def test_skips_titles_without_price(self):
+        from broker.screener import draw_control_group
+
+        priced = make_candidate("OUT1", score=40.0)
+        unpriced = make_candidate("OUT2", score=40.0)
+        unpriced.technical.price = None
+
+        control = draw_control_group([priced, unpriced], 55.0, size=5)
+        assert [c.ticker for c in control] == ["OUT1"]
+
+    def test_handles_universe_without_rejects(self):
+        from broker.screener import draw_control_group
+
+        scored = [make_candidate("HIT", score=70.0)]
+        assert draw_control_group(scored, 55.0) == []
+
+    def test_sample_size_caps_at_available_titles(self):
+        from broker.screener import draw_control_group
+
+        scored = [make_candidate(f"OUT{i}", score=40.0) for i in range(3)]
+        assert len(draw_control_group(scored, 55.0, size=15)) == 3
+
+    def test_written_with_kind_marker(self, tmp_path):
+        journal = Journal(tmp_path / "history.jsonl")
+        written = journal.append(
+            [make_candidate("SAP.DE", score=70.0)],
+            BENCHMARKS,
+            control=[make_candidate("XYZ.DE", score=40.0)],
+        )
+        assert written == 2
+
+        by_ticker = {e.ticker: e for e in journal.entries()}
+        assert by_ticker["SAP.DE"].kind == "hit"
+        assert by_ticker["SAP.DE"].is_control is False
+        assert by_ticker["XYZ.DE"].kind == "control"
+        assert by_ticker["XYZ.DE"].is_control is True
+
+    def test_older_entries_without_the_field_count_as_hits(self, tmp_path):
+        """Zeilen von vor der Änderung dürfen nicht zur Kontrollgruppe werden."""
+        path = tmp_path / "history.jsonl"
+        row = {
+            "date": "2026-01-15", "ticker": "SAP.DE", "name": "SAP", "region": "DE",
+            "benchmark": "^GDAXI", "currency": "EUR", "price": 100.0,
+            "total_score": 70.0, "valuation_score": 65.0, "quality_score": 72.0,
+            "technical_score": 60.0, "macro_score": 50.0,
+        }
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+        entry = Journal(path).entries()[0]
+        assert entry.kind == "hit"
+        assert entry.is_control is False
+
+    def test_a_title_is_never_both(self, tmp_path):
+        """Steht ein Titel in beiden Listen, zählt er als Treffer."""
+        journal = Journal(tmp_path / "history.jsonl")
+        same = make_candidate("SAP.DE", score=70.0)
+        written = journal.append([same], BENCHMARKS, control=[same])
+        assert written == 1
+        assert journal.entries()[0].kind == "hit"
+
+    def test_control_only_run_still_writes(self, tmp_path):
+        journal = Journal(tmp_path / "history.jsonl")
+        written = journal.append([], BENCHMARKS, control=[make_candidate("OUT.DE")])
+        assert written == 1
+        assert journal.entries()[0].is_control is True
+
+
+class TestControlGroupEvaluation:
+    @staticmethod
+    def observation(excess: float, control: bool, score: float = 70.0) -> Observation:
+        entry = make_entry(ticker=f"T{excess}{control}", score=score)
+        entry.kind = "control" if control else "hit"
+        return Observation(entry=entry, own_return=excess, benchmark_return=0.0)
+
+    def test_control_is_excluded_from_the_breakdowns(self):
+        observations = [self.observation(0.05, control=False) for _ in range(3)]
+        observations += [self.observation(-0.05, control=True, score=40.0)]
+
+        report = build_report(observations, "3M")
+        assert report.total_observations == 3  # nur die Treffer
+        assert report.hits.sample == 3
+        assert report.control.sample == 1
+        # Die Kontrollgruppe hat kein LLM-Urteil und keinen Score über 55 —
+        # sie darf in keiner Aufschlüsselung auftauchen.
+        assert sum(b.sample for b in report.by_score) == 3
+        assert sum(b.sample for b in report.by_verdict) == 3
+        assert sum(b.sample for b in report.by_setup) == 3
+
+    def test_edge_needs_both_groups_to_be_large_enough(self):
+        observations = [self.observation(0.05, control=False) for _ in range(MIN_SAMPLE)]
+        observations += [self.observation(-0.05, control=True) for _ in range(3)]
+
+        report = build_report(observations, "3M")
+        assert report.hits.reportable is True
+        assert report.control.reportable is False
+        assert report.edge is None  # Vorsprung gegen drei Titel ist keiner
+
+    def test_edge_is_the_difference_in_median_excess(self):
+        observations = [self.observation(0.08, control=False) for _ in range(MIN_SAMPLE)]
+        observations += [self.observation(0.02, control=True) for _ in range(MIN_SAMPLE)]
+
+        report = build_report(observations, "3M")
+        assert report.edge == pytest.approx(0.06)
+
+    def test_edge_can_be_negative(self):
+        """Wenn die Auswahl schlechter läuft, muss das sichtbar werden."""
+        observations = [self.observation(0.01, control=False) for _ in range(MIN_SAMPLE)]
+        observations += [self.observation(0.05, control=True) for _ in range(MIN_SAMPLE)]
+
+        report = build_report(observations, "3M")
+        assert report.edge == pytest.approx(-0.04)
+
+    def test_no_control_entries_yet(self):
+        observations = [self.observation(0.05, control=False) for _ in range(MIN_SAMPLE)]
+        report = build_report(observations, "3M")
+        assert report.control.sample == 0
+        assert report.edge is None

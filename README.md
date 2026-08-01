@@ -221,6 +221,12 @@ Jeder Lauf hält seine Treffer mit Kurs, Datum und allen Teilscores in
 `journal/history.jsonl` fest. Spätere Läufe rechnen aus, wie sich diese Titel
 seither gegenüber ihrem Index entwickelt haben.
 
+**Das Werkzeug verändert sich dabei nicht selbst.** Die Gewichte in `config.py`
+bleiben, wo sie sind; `combine_scores()` bekommt das Journal gar nicht zu sehen.
+Das ist Absicht — eine Automatik, die Gewichte an wenige Dutzend Beobachtungen
+anpasst, optimiert auf Rauschen. Das Journal sammelt Belege; was man daraus
+schließt, bleibt eine bewusste Entscheidung.
+
 Das ist **kein Backtest**, und das ist Absicht. Ein Backtest bräuchte
 Fundamentaldaten zum damaligen Stand; was heute in einer Gratis-Datenbank steht,
 ist die nachträglich korrigierte Fassung. Wer damit rückrechnet, weiß Dinge, die
@@ -232,7 +238,26 @@ broker track           # Auswertung über 1, 3, 6 und 12 Monate
 broker track --list    # nur die Beständigkeit je Titel
 ```
 
-Zwei Vorkehrungen gegen Selbstbetrug stecken fest im Code:
+**Die Kontrollgruppe.** Jeder Lauf schreibt zusätzlich 15 zufällig gezogene
+Titel mit, die es *nicht* auf die Liste geschafft haben. Ohne sie könnte das
+Journal nur zeigen, wie die Vorschläge gelaufen sind — nicht, ob die Auswahl
+überhaupt etwas taugt. Erst der Vergleich beantwortet die eigentliche Frage:
+
+```
+Treffer gegen Kontrollgruppe
+  Treffer           n=34   Median-Überrendite  +3.1%   Trefferquote 0.59
+  Kontrollgruppe    n=31   Median-Überrendite  +0.4%   Trefferquote 0.48
+    Vorsprung der Auswahl: +2.7 Prozentpunkte
+```
+
+Die Ziehung ist an das Datum gebunden: Ein wiederholter Lauf am selben Tag zieht
+dieselbe Gruppe. Sonst ließe sich — auch ungewollt — so lange neu würfeln, bis
+die Kontrollgruppe schlecht aussieht, und genau die Beliebigkeit wäre eingebaut,
+gegen die sie schützen soll. Der Vorsprung wird erst ausgewiesen, wenn **beide**
+Gruppen zehn Beobachtungen haben; ein Vorsprung gegenüber drei Kontrolltiteln
+ist keiner.
+
+Zwei weitere Vorkehrungen gegen Selbstbetrug stecken fest im Code:
 
 - **Entprellung.** Derselbe Titel steht oft wochenlang in Folge auf der Liste.
   Zählte man jede Nennung, entstünden aus einer einzigen Kursbewegung dreißig
@@ -383,7 +408,7 @@ entscheidet deshalb der Ersatzwert in der `run`-Zeile, nicht der `default` unter
 pytest
 ```
 
-318 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+333 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 

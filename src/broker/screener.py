@@ -11,8 +11,10 @@ braucht, bevor ein einzelner Titel dagegen verglichen werden kann:
 from __future__ import annotations
 
 import logging
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import date
 
 import pandas as pd
 
@@ -60,6 +62,38 @@ class ScreeningResult:
     candidates: list[Candidate]
     regime: MacroRegime
     stats: ScreeningStats
+    #: Zufallsstichprobe aus den *aussortierten* Titeln — die Kontrollgruppe.
+    #: Ohne sie könnte das Journal nur zeigen, wie sich die Treffer entwickelt
+    #: haben, nicht ob die Auswahl überhaupt etwas taugt.
+    control: list[Candidate] = field(default_factory=list)
+
+
+#: Größe der Kontrollgruppe je Lauf. In derselben Größenordnung wie die
+#: Trefferliste, damit beide Gruppen etwa gleich schnell Stichprobe sammeln.
+CONTROL_SAMPLE_SIZE = 15
+
+
+def draw_control_group(
+    scored: list[Candidate],
+    threshold: float,
+    size: int = CONTROL_SAMPLE_SIZE,
+    run_date: date | None = None,
+) -> list[Candidate]:
+    """Zieht eine Zufallsstichprobe aus den aussortierten Titeln.
+
+    Der Zufall ist an das Datum gebunden: Ein wiederholter Lauf am selben Tag
+    zieht dieselbe Gruppe. Sonst könnte man — auch ungewollt — so lange neu
+    würfeln, bis die Kontrollgruppe schlecht aussieht, und hätte damit genau
+    die Beliebigkeit eingebaut, gegen die die Kontrollgruppe schützen soll.
+    """
+    rejected = [
+        c for c in scored
+        if c.total_score < threshold and c.technical.price is not None
+    ]
+    if not rejected:
+        return []
+    rng = random.Random((run_date or date.today()).isoformat())
+    return rng.sample(rejected, min(size, len(rejected)))
 
 
 def _benchmark_key(entry: UniverseEntry) -> str:
@@ -258,10 +292,16 @@ class Screener:
         selected = [c for c in candidates if c.total_score >= threshold]
         selected = selected[: self.config.max_candidates]
 
+        control = draw_control_group(candidates, threshold)
+
         log.info(
-            "%d Titel bewertet, %d über der Score-Schwelle von %.0f.",
+            "%d Titel bewertet, %d über der Score-Schwelle von %.0f, "
+            "%d als Kontrollgruppe gezogen.",
             len(candidates),
             len(selected),
             threshold,
+            len(control),
         )
-        return ScreeningResult(candidates=selected, regime=regime, stats=stats)
+        return ScreeningResult(
+            candidates=selected, regime=regime, stats=stats, control=control
+        )

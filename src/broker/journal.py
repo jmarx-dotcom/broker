@@ -75,10 +75,18 @@ class JournalEntry:
     setup: str = ""
     llm_verdict: str = ""
     sector: str = ""
+    #: "hit" = vorgeschlagen, "control" = zufällig aus den aussortierten
+    #: Titeln gezogen. Ältere Zeilen haben das Feld nicht und gelten als
+    #: Treffer — damals wurde nichts anderes aufgezeichnet.
+    kind: str = "hit"
 
     @property
     def recorded_on(self) -> date:
         return datetime.strptime(self.date, "%Y-%m-%d").date()
+
+    @property
+    def is_control(self) -> bool:
+        return self.kind == "control"
 
 
 @dataclass
@@ -103,10 +111,30 @@ class PerformanceReport:
     by_verdict: list[BucketStats] = field(default_factory=list)
     by_setup: list[BucketStats] = field(default_factory=list)
     total_observations: int = 0
+    #: Treffer gegen Kontrollgruppe — die eigentliche Frage.
+    hits: BucketStats | None = None
+    control: BucketStats | None = None
 
     @property
     def reportable(self) -> bool:
         return self.total_observations >= MIN_SAMPLE
+
+    @property
+    def edge(self) -> float | None:
+        """Vorsprung der Treffer gegenüber der Kontrollgruppe.
+
+        Das ist die Zahl, für die das Journal überhaupt gebaut wurde: Schlägt
+        die Auswahl den Zufall? Sie wird erst ausgewiesen, wenn *beide*
+        Gruppen genug Beobachtungen haben — ein Vorsprung gegenüber drei
+        Kontrolltiteln ist keiner.
+        """
+        if self.hits is None or self.control is None:
+            return None
+        if not (self.hits.reportable and self.control.reportable):
+            return None
+        if self.hits.median_excess is None or self.control.median_excess is None:
+            return None
+        return round(self.hits.median_excess - self.control.median_excess, 4)
 
 
 class Journal:
@@ -118,22 +146,34 @@ class Journal:
     # -- Schreiben --------------------------------------------------------
 
     def append(self, candidates: list[Candidate], benchmarks: dict[str, str],
-               run_date: date | None = None) -> int:
-        """Schreibt die Treffer eines Laufs fort. Gibt die Zeilenzahl zurück."""
-        if not candidates:
+               run_date: date | None = None, control: list[Candidate] | None = None,
+               ) -> int:
+        """Schreibt Treffer und Kontrollgruppe eines Laufs fort.
+
+        Beide landen in derselben Datei und unterscheiden sich nur im Feld
+        `kind`. Getrennte Dateien wären verlockend, würden aber die
+        Entprellung und die Kursabfrage doppeln — und ein Auswertungsschritt,
+        der nur eine der beiden Dateien liest, wäre lautlos falsch.
+        """
+        tagged = [(c, "hit") for c in candidates]
+        tagged += [(c, "control") for c in (control or [])]
+        if not tagged:
             return 0
 
         stamp = (run_date or date.today()).isoformat()
         existing = {(e.date, e.ticker) for e in self.entries()}
+        seen: set[str] = set()
 
         rows: list[JournalEntry] = []
-        for c in candidates:
-            if (stamp, c.ticker) in existing:
+        for c, kind in tagged:
+            if (stamp, c.ticker) in existing or c.ticker in seen:
                 continue  # Lauf wurde am selben Tag wiederholt
             if c.technical.price is None:
                 continue  # ohne Einstiegskurs ist der Eintrag wertlos
+            seen.add(c.ticker)
             rows.append(
                 JournalEntry(
+                    kind=kind,
                     date=stamp,
                     ticker=c.ticker,
                     name=c.name,
@@ -331,21 +371,31 @@ def _stats(label: str, observations: list[Observation]) -> BucketStats:
 def build_report(
     observations: list[Observation], horizon_label: str
 ) -> PerformanceReport:
+    # Die Kontrollgruppe gehört in keine der Aufschlüsselungen: Ihre Scores
+    # liegen definitionsgemäß unter der Schwelle, und ein LLM-Urteil hat sie
+    # nie bekommen. Sie ist der Vergleichsmaßstab, nicht eine Gruppe unter
+    # vielen.
+    hits = [o for o in observations if not o.entry.is_control]
+    control = [o for o in observations if o.entry.is_control]
+
     report = PerformanceReport(
-        horizon=horizon_label, total_observations=len(observations)
+        horizon=horizon_label,
+        total_observations=len(hits),
+        hits=_stats("Treffer", hits),
+        control=_stats("Kontrollgruppe", control),
     )
 
     for label, low, high in SCORE_BUCKETS:
-        group = [o for o in observations if low <= o.entry.total_score < high]
+        group = [o for o in hits if low <= o.entry.total_score < high]
         report.by_score.append(_stats(label, group))
 
     for verdict in ("zyklisch-guenstig", "strukturell-billig", "unklar"):
-        group = [o for o in observations if o.entry.llm_verdict == verdict]
+        group = [o for o in hits if o.entry.llm_verdict == verdict]
         report.by_verdict.append(_stats(verdict, group))
 
-    setups = sorted({o.entry.setup for o in observations if o.entry.setup})
+    setups = sorted({o.entry.setup for o in hits if o.entry.setup})
     for setup in setups:
-        group = [o for o in observations if o.entry.setup == setup]
+        group = [o for o in hits if o.entry.setup == setup]
         report.by_setup.append(_stats(setup, group))
 
     return report

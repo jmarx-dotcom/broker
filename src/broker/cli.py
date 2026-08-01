@@ -118,9 +118,21 @@ def cmd_screen(args: argparse.Namespace) -> int:
     journal = Journal(config.journal_path)
     appearances: dict[str, int] = {}
     if not args.no_journal:
-        written = journal.append(result.candidates, BENCHMARKS)
+        written = journal.append(
+            result.candidates, BENCHMARKS, control=result.control
+        )
         if written:
-            log.info("%d Treffer im Journal festgehalten (%s).", written, journal.path)
+            # `written` zählt nach der Entprellung — von den angebotenen
+            # Zeilen bleibt nur, was heute noch nicht im Journal stand.
+            log.info(
+                "%d von %d Zeilen neu im Journal (%d Treffer, %d Kontrolltitel "
+                "angeboten) — %s.",
+                written,
+                len(result.candidates) + len(result.control),
+                len(result.candidates),
+                len(result.control),
+                journal.path,
+            )
         appearances = journal.appearances()
 
     # Ausgabe --------------------------------------------------------------
@@ -237,7 +249,7 @@ def _print_buckets(title: str, buckets) -> None:
 
 def cmd_track(args: argparse.Namespace) -> int:
     """Wertet das Journal aus: Wie liefen die bisherigen Treffer?"""
-    from broker.journal import HORIZONS, Journal, evaluate
+    from broker.journal import HORIZONS, MIN_SAMPLE, Journal, evaluate
 
     config = Config.from_env()
     journal = Journal(config.journal_path)
@@ -280,6 +292,17 @@ def cmd_track(args: argparse.Namespace) -> int:
         any_output = True
         print(f"\n── {report.horizon} ({days} Tage) ── "
               f"{report.total_observations} Beobachtungen")
+        _print_buckets(
+            "Treffer gegen Kontrollgruppe",
+            [b for b in (report.hits, report.control) if b is not None],
+        )
+        if report.edge is not None:
+            print(f"    Vorsprung der Auswahl: {report.edge * 100:+.1f} Prozentpunkte")
+        elif report.control is not None and not report.control.reportable:
+            print(
+                f"    (Kontrollgruppe erst {report.control.sample} von "
+                f"{MIN_SAMPLE} Beobachtungen — Vorsprung noch nicht ausweisbar.)"
+            )
         _print_buckets("Nach Score", report.by_score)
         _print_buckets("Nach LLM-Urteil", report.by_verdict)
         _print_buckets("Nach Chart-Setup", report.by_setup)
