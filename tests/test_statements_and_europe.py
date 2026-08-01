@@ -660,6 +660,60 @@ def test_eurostat_returns_none_when_every_filter_fails(monkeypatch):
     assert EurostatClient().fetch(spec) is None
 
 
+def test_eurostat_reports_valid_codes_after_failing(monkeypatch, caplog):
+    """Statt 'prüfe die Codeliste' soll die Codeliste selbst im Log stehen."""
+    spec = EurostatSpec("k", "une_rt_m", "L", "%", {"geo": "EA20", "age": "TOTAL"})
+
+    def fake_get(url, params=None, timeout=None):
+        if params.get("lastTimePeriod"):
+            return FakeResponse(
+                {
+                    "dimension": {
+                        "geo": {"category": {"index": {"EA19": 0, "EA20": 1, "DE": 2}}},
+                        "age": {"category": {"index": {"Y_GE15": 0, "Y_LT25": 1}}},
+                    }
+                }
+            )
+        return FakeResponse({"value": {}, "dimension": {}})
+
+    monkeypatch.setattr("broker.macro.europe.requests.get", fake_get)
+    with caplog.at_level("WARNING"):
+        assert EurostatClient().fetch(spec) is None
+
+    meldung = caplog.text
+    assert "Y_GE15" in meldung and "Y_LT25" in meldung
+    assert "geo = DE, EA19, EA20" in meldung
+
+
+def test_eurostat_survives_unavailable_code_list(monkeypatch, caplog):
+    spec = EurostatSpec("k", "ds", "L", "%", {"geo": "EA20"})
+
+    def fake_get(url, params=None, timeout=None):
+        if params.get("lastTimePeriod"):
+            raise OSError("Codeliste gerade nicht erreichbar")
+        return FakeResponse({"value": {}, "dimension": {}})
+
+    monkeypatch.setattr("broker.macro.europe.requests.get", fake_get)
+    with caplog.at_level("WARNING"):
+        assert EurostatClient().fetch(spec) is None
+    assert "Codeliste war nicht abrufbar" in caplog.text
+
+
+def test_code_list_is_only_fetched_on_failure(monkeypatch):
+    """Der erklärende Zusatzabruf darf den Normalfall nicht verteuern."""
+    spec = EurostatSpec("k", "ds", "L", "Index", {"geo": "EA20"})
+    abrufe: list[dict] = []
+
+    def fake_get(url, params=None, timeout=None):
+        abrufe.append(params)
+        return FakeResponse(EUROSTAT_PAYLOAD)
+
+    monkeypatch.setattr("broker.macro.europe.requests.get", fake_get)
+    assert EurostatClient().fetch(spec) is not None
+    assert len(abrufe) == 1
+    assert "lastTimePeriod" not in abrufe[0]
+
+
 def test_unemployment_spec_has_fallbacks():
     """Die Reihe, die im Live-Lauf ausfiel, darf nicht ohne Ersatz bleiben."""
     spec = next(s for s in EUROSTAT_SERIES if s.key == "ez_unemployment")

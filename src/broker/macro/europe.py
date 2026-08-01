@@ -264,6 +264,35 @@ class EurostatClient:
             log.warning("Eurostat-Reihe %s nicht abrufbar: %s", spec.dataset, exc)
             return []
 
+    def _available_codes(self, spec: EurostatSpec) -> dict[str, list[str]]:
+        """Fragt die Achsenbeschreibung des Datensatzes ab.
+
+        Eurostat liefert die vollständigen Codelisten in jeder Antwort mit —
+        auch in einer, die keine Werte enthält. `lastTimePeriod=1` begrenzt die
+        Datenmenge auf eine Periode, die Beschreibung bleibt vollständig.
+
+        Damit muss niemand raten, welcher Code gilt: Schlägt eine Reihe fehl,
+        stehen die gültigen Werte in derselben Logzeile.
+        """
+        try:
+            response = requests.get(
+                EUROSTAT_URL.format(dataset=spec.dataset),
+                params={"format": "JSON", "lang": "DE", "lastTimePeriod": "1"},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            dimensions = response.json().get("dimension") or {}
+        except Exception as exc:
+            log.debug("Codeliste für %s nicht abrufbar: %s", spec.dataset, exc)
+            return {}
+
+        codes: dict[str, list[str]] = {}
+        for axis in spec.filters:
+            index = dimensions.get(axis, {}).get("category", {}).get("index") or {}
+            if index:
+                codes[axis] = sorted(index)
+        return codes
+
     def fetch(self, spec: EurostatSpec) -> MacroSeries | None:
         for attempt, filters in enumerate(spec.filter_sets):
             observations = self._load(spec, filters)
@@ -280,12 +309,28 @@ class EurostatClient:
         # Antwort kam an, enthielt aber nichts Verwertbares. Fast immer ein
         # Code, den dieser Datensatz nicht kennt — ohne diese Meldung fiele die
         # Reihe lautlos aus und niemand würde es merken.
-        log.warning(
-            "Eurostat-Reihe %s lieferte keine Beobachtungen, auch nicht mit "
-            "%d Ersatzfiltern — prüfe die Codeliste des Datensatzes. Zuletzt "
-            "versucht: %s.",
-            spec.dataset, len(spec.filter_sets) - 1, spec.filter_sets[-1],
-        )
+        codes = self._available_codes(spec)
+        if codes:
+            log.warning(
+                "Eurostat-Reihe %s lieferte mit keinem von %d Filtersätzen "
+                "Daten. Der Datensatz kennt diese Codes: %s. Versucht wurde "
+                "zuletzt: %s.",
+                spec.dataset,
+                len(spec.filter_sets),
+                "; ".join(
+                    f"{axis} = {', '.join(values[:12])}"
+                    + (" …" if len(values) > 12 else "")
+                    for axis, values in codes.items()
+                ),
+                spec.filter_sets[-1],
+            )
+        else:
+            log.warning(
+                "Eurostat-Reihe %s lieferte mit keinem von %d Filtersätzen "
+                "Daten, und die Codeliste war nicht abrufbar. Zuletzt "
+                "versucht: %s.",
+                spec.dataset, len(spec.filter_sets), spec.filter_sets[-1],
+            )
         return None
 
 
