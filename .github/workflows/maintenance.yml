@@ -1,0 +1,101 @@
+name: Wartung
+
+# Die Fehler, die dieses Werkzeug im Betrieb einholen, sind selten
+# Programmierfehler — es sind Änderungen draußen. Dieser Lauf prüft die drei
+# bekannten Driftarten einmal pro Woche nach und meldet sich nur, wenn er
+# etwas findet. Reparaturen kommen als Pull Request, nie direkt auf den Zweig.
+
+on:
+  schedule:
+    # Sonntags 06:00 UTC — abseits der werktäglichen Screening-Läufe.
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "Zu prüfendes Universum"
+        default: "all"
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Abhängigkeiten installieren
+        run: pip install -e .
+
+      - name: Quellen prüfen
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          broker doctor --universe "${{ inputs.universe || 'all' }}" --json > doctor.json
+
+      - name: Befunde auswerten
+        id: triage
+        run: python .github/scripts/triage_doctor.py doctor.json
+
+      - name: Tote Ticker entfernen und Pull Request öffnen
+        if: steps.triage.outputs.has_fixable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="wartung/universum-$(date -u +%F)"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+
+          # Aus dem vorhandenen Bericht reparieren, nicht neu prüfen: Ein
+          # zweiter Abruf aller Titel könnte andere Befunde liefern als die,
+          # die gleich im Pull Request stehen.
+          broker doctor --from-report doctor.json --fix
+
+          if [ -z "$(git status --porcelain src/broker/universe/data/)" ]; then
+            echo "Keine Dateiänderung — kein Pull Request."
+            exit 0
+          fi
+
+          git add src/broker/universe/data/
+          git commit -m "Universum: nicht mehr handelbare Titel entfernen"
+          git push -u origin "$BRANCH" --force-with-lease
+
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "$BRANCH" \
+            --title "Wartung: nicht mehr handelbare Titel entfernen" \
+            --body-file pr_body.md \
+            || echo "Pull Request existiert bereits."
+
+      - name: Nicht-mechanische Befunde als Issue melden
+        if: steps.triage.outputs.has_manual == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE="Wartung: Quellen brauchen eine Anpassung"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file issue_body.md
+          else
+            gh issue create --title "$TITLE" --body-file issue_body.md
+          fi
+
+      - name: Bericht ablegen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doctor-${{ github.run_number }}
+          path: doctor.json
+          retention-days: 90

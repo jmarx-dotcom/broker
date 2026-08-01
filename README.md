@@ -337,6 +337,7 @@ broker notify --send                           # Testnachricht verschicken
 broker leverage SAP.DE --factor 4 --days 60     # welcher Hebel passt?
 broker track                                   # Journal auswerten
 broker track --list                            # Beständigkeit je Titel
+broker doctor                                  # Quellen auf Drift prüfen
 broker cache --keep-days 3                     # alte Cache-Tage löschen
 ```
 
@@ -386,6 +387,51 @@ Der Zeitplan übergibt keine Eingaben — über das Universum des täglichen Lau
 entscheidet deshalb der Ersatzwert in der `run`-Zeile, nicht der `default` unter
 `workflow_dispatch`. Beide stehen auf `all`; wer das ändert, muss beide ändern.
 
+## Wartung — die Drift-Prüfung
+
+Die Fehler, die dieses Werkzeug im Betrieb einholen, sind selten
+Programmierfehler. Es sind Änderungen draußen: Ein Index tauscht Mitglieder aus,
+Eurostat benennt den Euroraum von `EA20` in `EA21` um, Yahoo ändert die
+Bezeichnung einer Bilanzzeile. Jede einzelne davon ist harmlos und läuft still
+ins Leere — eine Warnung im Log, die niemand liest, und eine Kennzahl, die ab
+dann fehlt.
+
+```bash
+broker doctor                 # alle drei Prüfungen, Klartext
+broker doctor --json          # maschinenlesbar
+broker doctor --fix           # nur die mechanisch behebbaren Befunde
+```
+
+| Prüfung | Findet | Mechanisch behebbar |
+|---|---|---|
+| **Tote Ticker** | Titel ohne Kursdaten — Delisting, Übernahme, Börsenwechsel | ja: Zeile aus der CSV |
+| **Ausgefallene Makroreihen** | erwartete Reihen, die nicht mehr ankommen | nein |
+| **Umbenannte Abschlusszeilen** | Felder, die im *ganzen* Universum leer sind | nein |
+
+Geprüft wird gegen die lebenden Schnittstellen, nicht gegen Logtext: Ein
+Logformat ändert sich, sobald jemand eine Meldung umformuliert, die Frage
+„antwortet diese Reihe noch?" bleibt dieselbe.
+
+**Die wichtigste Sicherung ist eine Nicht-Aktion.** Fallen mehr als 20 % der
+Titel gleichzeitig aus, ist nicht das Universum veraltet, sondern die
+Datenquelle gestört. Dann meldet die Prüfung eine Störung und schlägt
+ausdrücklich *nichts* zur Entfernung vor — ein Pull Request, der halb Europa
+aus dem Universum löscht, weil Yahoo zehn Minuten nicht antwortet, wäre das
+Gefährlichste am ganzen Werkzeug.
+
+`.github/workflows/maintenance.yml` führt das sonntags aus. Findet es nichts,
+endet der Lauf still. Sonst:
+
+* **Tote Ticker** → Pull Request gegen den Arbeitszweig, nie ein direkter Push.
+  Der Text weist darauf hin, dass ein Ausfall auch eine Umbenennung sein kann —
+  dann gehört das neue Kürzel eingetragen statt der Zeile gelöscht.
+* **Alles andere** → ein Issue, das bei Wiederholung kommentiert statt neu
+  angelegt wird.
+
+Repariert wird aus dem bereits erstellten Bericht (`--from-report`), nicht aus
+einem zweiten Abruf: Sonst stünden im Pull Request womöglich andere Titel als
+die, die tatsächlich entfernt wurden.
+
 ## Grenzen
 
 - **Die Indexlisten sind Snapshots.** Index-Zugehörigkeiten ändern sich mehrmals
@@ -408,7 +454,7 @@ entscheidet deshalb der Ersatzwert in der `run`-Zeile, nicht der `default` unter
 pytest
 ```
 
-333 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+357 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 

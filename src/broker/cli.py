@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from broker.config import Config
 from broker.macro.fred import FredClient
@@ -429,6 +430,79 @@ def cmd_notify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Prüft die externen Quellen auf Drift."""
+    import json as _json
+
+    from broker.maintenance import DoctorReport, Finding, remove_tickers, run_doctor
+
+    config = Config.from_env()
+
+    if args.from_report:
+        # Reparatur auf Basis eines vorhandenen Berichts: Ein zweiter Abruf
+        # aller Titel würde nicht nur Minuten kosten, er könnte auch andere
+        # Befunde liefern als die, die im Pull Request stehen.
+        raw = _json.loads(Path(args.from_report).read_text(encoding="utf-8"))
+        report = DoctorReport(
+            findings=[Finding(**f) for f in raw.get("findings", [])],
+            checked=raw.get("checked", {}),
+            skipped=raw.get("skipped", []),
+        )
+    else:
+        provider = get_provider(config, use_cache=False)  # Drift sieht man nur live
+        regime = _load_regime(config, use_cache=False)
+        report = run_doctor(
+            provider,
+            regime.series,
+            group=args.universe,
+            with_fred=bool(config.fred_api_key),
+            skip_tickers=args.skip_tickers,
+            skip_statements=args.skip_statements,
+        )
+
+    if args.json:
+        print(_json.dumps(
+            {
+                "clean": report.clean,
+                "summary": report.summary(),
+                "checked": report.checked,
+                "skipped": report.skipped,
+                "findings": [
+                    {
+                        "check": f.check,
+                        "subject": f.subject,
+                        "message": f.message,
+                        "fixable": f.fixable,
+                    }
+                    for f in report.findings
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
+    else:
+        print(f"\nGeprüft: " + ", ".join(
+            f"{count} {name}" for name, count in sorted(report.checked.items())
+        ))
+        if report.skipped:
+            print(f"Übersprungen: {', '.join(report.skipped)}")
+        print(f"\n{report.summary()}\n")
+        for finding in report.findings:
+            mark = "reparierbar" if finding.fixable else "prüfen"
+            print(f"  [{mark:>11}] {finding.check}: {finding.message}")
+        print()
+
+    if args.fix and report.fixable:
+        tickers = [f.subject for f in report.fixable if f.check == "Toter Ticker"]
+        removed = remove_tickers(tickers)
+        for name, count in sorted(removed.items()):
+            print(f"{count} Zeilen aus {name} entfernt.")
+
+    # Immer 0: Das ist ein Bericht, kein Test. Ein roter Lauf würde die
+    # Meldung verdecken, um die es geht.
+    return 0
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     config = Config.from_env()
     cache = DayCache(config.cache_dir)
@@ -512,6 +586,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--send", action="store_true", help="Testnachricht tatsächlich verschicken"
     )
     notify_cmd.set_defaults(func=cmd_notify)
+
+    doctor = sub.add_parser(
+        "doctor", help="Externe Quellen auf Drift prüfen (tote Ticker, Reihen, Felder)"
+    )
+    doctor.add_argument("--universe", default="all", help="Zu prüfende Gruppe")
+    doctor.add_argument("--json", action="store_true", help="Ausgabe als JSON")
+    doctor.add_argument(
+        "--fix", action="store_true",
+        help="Mechanisch behebbare Befunde korrigieren (tote Ticker entfernen)",
+    )
+    doctor.add_argument(
+        "--skip-tickers", action="store_true", help="Ticker-Prüfung überspringen"
+    )
+    doctor.add_argument(
+        "--skip-statements", action="store_true",
+        help="Abschlussfelder nicht prüfen",
+    )
+    doctor.add_argument(
+        "--from-report", metavar="PFAD",
+        help="Befunde aus einem früheren --json-Bericht lesen statt neu prüfen",
+    )
+    doctor.set_defaults(func=cmd_doctor)
 
     cache = sub.add_parser("cache", help="Cache aufräumen")
     cache.add_argument("--keep-days", type=int, default=3)
