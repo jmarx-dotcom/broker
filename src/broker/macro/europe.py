@@ -77,17 +77,19 @@ EUROSTAT_SERIES: tuple[EurostatSpec, ...] = (
         {"geo": "EA20", "s_adj": "SCA", "nace_r2": "B-D", "unit": "I21"},
     ),
     EurostatSpec(
+        # EA21, nicht EA20: Der Euroraum wächst, und jeder Datensatz führt
+        # eine eigene Codeliste. Dieser kennt ausschließlich die aktuelle
+        # Zusammensetzung — die Ersatzfilter decken den Fall ab, dass eine
+        # ältere Abgrenzung nachgepflegt wird oder ein Beitritt hinzukommt.
         "ez_unemployment", "une_rt_m", "Euroraum-Arbeitslosenquote", "%",
-        {"geo": "EA20", "s_adj": "SA", "age": "TOTAL", "sex": "T", "unit": "PC_ACT"},
+        {"geo": "EA21", "s_adj": "SA", "age": "TOTAL", "sex": "T", "unit": "PC_ACT"},
         percent=True,
         fallbacks=(
-            # Der Euroraum hieß bis 2023 EA19; ältere Reihen führen ihn so.
+            {"geo": "EA22", "s_adj": "SA", "age": "TOTAL", "sex": "T",
+             "unit": "PC_ACT"},
+            {"geo": "EA20", "s_adj": "SA", "age": "TOTAL", "sex": "T",
+             "unit": "PC_ACT"},
             {"geo": "EA19", "s_adj": "SA", "age": "TOTAL", "sex": "T",
-             "unit": "PC_ACT"},
-            # Manche Datensätze kennen kein TOTAL, sondern nur Altersbänder.
-            {"geo": "EA20", "s_adj": "SA", "age": "Y_GE15", "sex": "T",
-             "unit": "PC_ACT"},
-            {"geo": "EA20", "s_adj": "SA", "age": "Y25-74", "sex": "T",
              "unit": "PC_ACT"},
         ),
     ),
@@ -215,6 +217,21 @@ def _time_lookup(payload: dict):
     return lambda flat: by_position.get(flat)
 
 
+def _rank_codes(values: list[str], attempted: str | None) -> list[str]:
+    """Stellt Codes nach vorn, die dem vergeblich versuchten ähneln.
+
+    Die Länderliste von Eurostat hat über vierzig Einträge. Alphabetisch
+    sortiert stand die gesuchte Antwort — EA21 statt EA20 — an zehnter
+    Stelle und wäre bei einer knapperen Kürzung im Log verschwunden. Wer
+    EA20 vergeblich versucht hat, will zuerst die anderen EA-Codes sehen.
+    """
+    if not attempted:
+        return values
+    prefix = attempted[:2].upper()
+    similar = [v for v in values if v.upper().startswith(prefix)]
+    return similar + [v for v in values if not v.upper().startswith(prefix)]
+
+
 class EurostatClient:
     """Liest Eurostat-Reihen im JSON-stat-Format.
 
@@ -311,6 +328,7 @@ class EurostatClient:
         # Reihe lautlos aus und niemand würde es merken.
         codes = self._available_codes(spec)
         if codes:
+            attempted = spec.filter_sets[-1]
             log.warning(
                 "Eurostat-Reihe %s lieferte mit keinem von %d Filtersätzen "
                 "Daten. Der Datensatz kennt diese Codes: %s. Versucht wurde "
@@ -318,11 +336,11 @@ class EurostatClient:
                 spec.dataset,
                 len(spec.filter_sets),
                 "; ".join(
-                    f"{axis} = {', '.join(values[:12])}"
+                    f"{axis} = {', '.join(_rank_codes(values, attempted.get(axis))[:12])}"
                     + (" …" if len(values) > 12 else "")
                     for axis, values in codes.items()
                 ),
-                spec.filter_sets[-1],
+                attempted,
             )
         else:
             log.warning(

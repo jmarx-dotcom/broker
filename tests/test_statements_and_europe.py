@@ -682,7 +682,8 @@ def test_eurostat_reports_valid_codes_after_failing(monkeypatch, caplog):
 
     meldung = caplog.text
     assert "Y_GE15" in meldung and "Y_LT25" in meldung
-    assert "geo = DE, EA19, EA20" in meldung
+    # Die EA-Codes stehen vorn, weil EA20 vergeblich versucht wurde.
+    assert "geo = EA19, EA20, DE" in meldung
 
 
 def test_eurostat_survives_unavailable_code_list(monkeypatch, caplog):
@@ -712,6 +713,26 @@ def test_code_list_is_only_fetched_on_failure(monkeypatch):
     assert EurostatClient().fetch(spec) is not None
     assert len(abrufe) == 1
     assert "lastTimePeriod" not in abrufe[0]
+
+
+def test_rank_codes_surfaces_similar_entries_first():
+    """Der reale Fall: EA21 stand alphabetisch an zehnter Stelle."""
+    from broker.macro.europe import _rank_codes
+
+    geo = ["AT", "BA", "BE", "BG", "CH", "CY", "CZ", "DE", "DK", "EA21", "EE", "EL"]
+    assert _rank_codes(geo, "EA20")[:1] == ["EA21"]
+    # Ohne Bezugswert bleibt die Reihenfolge unverändert.
+    assert _rank_codes(geo, None) == geo
+    # Alle Codes bleiben erhalten, keiner fällt weg.
+    assert sorted(_rank_codes(geo, "EA20")) == sorted(geo)
+
+
+def test_unemployment_uses_the_code_the_dataset_actually_has():
+    """EA21 — von der Selbstdiagnose des Laufs vom 1. August ermittelt."""
+    spec = next(s for s in EUROSTAT_SERIES if s.key == "ez_unemployment")
+    assert spec.filters["geo"] == "EA21"
+    assert spec.filters["age"] == "TOTAL"
+    assert spec.filters["unit"] == "PC_ACT"
 
 
 def test_unemployment_spec_has_fallbacks():
