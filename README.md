@@ -405,6 +405,7 @@ broker doctor --fix           # nur die mechanisch behebbaren Befunde
 | Prüfung | Findet | Mechanisch behebbar |
 |---|---|---|
 | **Tote Ticker** | Titel ohne Kursdaten — Delisting, Übernahme, Börsenwechsel | ja: Zeile aus der CSV |
+
 | **Ausgefallene Makroreihen** | erwartete Reihen, die nicht mehr ankommen | nein |
 | **Umbenannte Abschlusszeilen** | Felder, die im *ganzen* Universum leer sind | nein |
 
@@ -412,9 +413,17 @@ Geprüft wird gegen die lebenden Schnittstellen, nicht gegen Logtext: Ein
 Logformat ändert sich, sobald jemand eine Meldung umformuliert, die Frage
 „antwortet diese Reihe noch?" bleibt dieselbe.
 
+**Zwei Runden vor jedem Löschvorschlag.** Wer beim ersten Abruf nichts liefert,
+wird ein zweites Mal gefragt — einzeln und mit Pause. Ein einzelner
+fehlgeschlagener Abruf ist kein Beleg für ein Delisting: Beim ersten scharfen
+Lauf standen unter zwanzig gemeldeten Titeln fünf, die weiter gehandelt werden.
+Sie waren nicht tot, sondern kurz nicht erreichbar.
+
 **Die wichtigste Sicherung ist eine Nicht-Aktion.** Fallen mehr als 20 % der
 Titel gleichzeitig aus, ist nicht das Universum veraltet, sondern die
-Datenquelle gestört. Dann meldet die Prüfung eine Störung und schlägt
+Datenquelle gestört. Diese Prüfung greift **vor** der zweiten Runde — sonst
+liefen bei einem breiten Ausfall hunderte Einzelabrufe mit Pause ins Zeitlimit,
+für ein Ergebnis, das ohnehin verworfen wird. Dann meldet die Prüfung eine Störung und schlägt
 ausdrücklich *nichts* zur Entfernung vor — ein Pull Request, der halb Europa
 aus dem Universum löscht, weil Yahoo zehn Minuten nicht antwortet, wäre das
 Gefährlichste am ganzen Werkzeug.
@@ -454,7 +463,7 @@ die, die tatsächlich entfernt wurden.
 pytest
 ```
 
-357 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
+361 Tests, alle mit synthetischen Daten und ohne Netzwerkzugriff.
 
 ## Aufbau
 

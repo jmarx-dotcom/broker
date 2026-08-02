@@ -70,7 +70,7 @@ class TestDeadTickers:
         )
 
         provider = FakeProvider(dead={"B4B.DE", "COP.DE", "SANT.DE"})
-        findings, checked, aborted = check_tickers(provider, workers=2)
+        findings, checked, aborted = check_tickers(provider, workers=2, retry_delay=0)
 
         assert aborted is None
         assert checked == 25
@@ -85,7 +85,7 @@ class TestDeadTickers:
             maintenance, "load_universe",
             lambda group="all": [_entry(t) for t in universe],
         )
-        findings, _, aborted = check_tickers(FakeProvider(broken={"A.DE"}), workers=2)
+        findings, _, aborted = check_tickers(FakeProvider(broken={"A.DE"}), workers=2, retry_delay=0)
         assert aborted is None
         assert [f.subject for f in findings] == ["A.DE"]
 
@@ -103,7 +103,7 @@ class TestDeadTickers:
             lambda group="all": [_entry(t) for t in universe],
         )
         provider = FakeProvider(dead={f"T{i}.DE" for i in range(30)})
-        findings, checked, aborted = check_tickers(provider, workers=4)
+        findings, checked, aborted = check_tickers(provider, workers=4, retry_delay=0)
 
         assert aborted == "Ausfallquote zu hoch"
         assert checked == 50
@@ -123,7 +123,7 @@ class TestDeadTickers:
         )
         below = int(100 * OUTAGE_RATIO)  # exakt 20 -> nicht "mehr als"
         provider = FakeProvider(dead={f"T{i}.DE" for i in range(below)})
-        findings, _, aborted = check_tickers(provider, workers=4)
+        findings, _, aborted = check_tickers(provider, workers=4, retry_delay=0)
         assert aborted is None
         assert len(findings) == below
 
@@ -301,6 +301,7 @@ class TestReport:
             provider,
             series={"ez_gdp": _series("ez_gdp")},
             with_fred=False,
+            retry_delay=0,
         )
 
         checks = {f.check for f in report.findings}
@@ -429,3 +430,99 @@ class TestTriageScript:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
         assert module.main(str(report)) == 0
+
+
+class TestRetryBeforeDeclaringDead:
+    """Ein einzelner fehlgeschlagener Abruf ist kein Beleg für ein Delisting.
+
+    Der erste scharfe Lauf meldete zwanzig tote Titel, darunter fünf, die
+    weiter gehandelt werden — BNY Mellon, Marsh & McLennan, Fiserv, Coterra,
+    Schaeffler. Sie waren nicht tot, sondern kurz nicht erreichbar.
+    """
+
+    class Flaky(FakeProvider):
+        """Scheitert beim ersten Abruf je Ticker, antwortet ab dem zweiten."""
+
+        def __init__(self, flaky: set[str], **kw):
+            super().__init__(**kw)
+            self.flaky = set(flaky)
+            self.seen: set[str] = set()
+
+        def history(self, ticker: str, period: str = "3y"):
+            if ticker in self.flaky and ticker not in self.seen:
+                self.seen.add(ticker)
+                raise RuntimeError("kurzzeitig nicht erreichbar")
+            return super().history(ticker, period)
+
+    def test_transient_failures_are_not_reported(self, monkeypatch):
+        from broker import maintenance
+
+        universe = ["MMC", "BK", "FI"] + [f"OK{i}.DE" for i in range(30)]
+        monkeypatch.setattr(
+            maintenance, "load_universe",
+            lambda group="all": [_entry(t) for t in universe],
+        )
+        provider = self.Flaky(flaky={"MMC", "BK", "FI"})
+        findings, _, aborted = check_tickers(provider, workers=4, retry_delay=0)
+
+        assert aborted is None
+        assert findings == []  # alle drei antworteten im zweiten Versuch
+
+    def test_persistently_dead_still_reported(self, monkeypatch):
+        from broker import maintenance
+
+        universe = ["ANSS", "MMC"] + [f"OK{i}.DE" for i in range(30)]
+        monkeypatch.setattr(
+            maintenance, "load_universe",
+            lambda group="all": [_entry(t) for t in universe],
+        )
+        # ANSS ist dauerhaft weg, MMC nur kurz gestolpert.
+        provider = self.Flaky(flaky={"MMC"}, dead={"ANSS"})
+        findings, _, aborted = check_tickers(provider, workers=4, retry_delay=0)
+
+        assert aborted is None
+        assert [f.subject for f in findings] == ["ANSS"]
+
+    def test_outage_short_circuits_before_the_retry_round(self, monkeypatch):
+        """Sonst liefe die zweite Runde bei einer Störung ins Zeitlimit.
+
+        674 Titel einzeln mit zwei Sekunden Pause sind über zwanzig Minuten —
+        für ein Ergebnis, das wegen der Ausfallquote ohnehin verworfen wird.
+        """
+        from broker import maintenance
+
+        universe = [f"T{i}.DE" for i in range(50)]
+        monkeypatch.setattr(
+            maintenance, "load_universe",
+            lambda group="all": [_entry(t) for t in universe],
+        )
+
+        calls: list[str] = []
+
+        class Counting(FakeProvider):
+            def history(self, ticker, period="3y"):
+                calls.append(ticker)
+                return super().history(ticker, period)
+
+        provider = Counting(dead={f"T{i}.DE" for i in range(30)})
+        findings, _, aborted = check_tickers(provider, workers=4, retry_delay=99)
+
+        assert aborted == "Ausfallquote zu hoch"
+        assert findings[0].fixable is False
+        # Genau ein Abruf je Titel — keine zweite Runde.
+        assert len(calls) == 50
+
+    def test_retry_uses_the_configured_delay(self, monkeypatch):
+        """Die Pause muss tatsächlich zwischen den Wiederholungen liegen."""
+        from broker import maintenance
+
+        universe = ["A.DE"] + [f"OK{i}.DE" for i in range(30)]
+        monkeypatch.setattr(
+            maintenance, "load_universe",
+            lambda group="all": [_entry(t) for t in universe],
+        )
+        slept: list[float] = []
+        monkeypatch.setattr(maintenance.time, "sleep", lambda s: slept.append(s))
+
+        check_tickers(FakeProvider(dead={"A.DE"}), workers=4, retry_delay=1.5)
+        assert slept == [1.5]  # nur der eine Verdachtsfall

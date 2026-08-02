@@ -70,12 +70,31 @@ jobs:
           git commit -m "Universum: nicht mehr handelbare Titel entfernen"
           git push -u origin "$BRANCH" --force-with-lease
 
-          gh pr create \
-            --base "${{ github.ref_name }}" \
-            --head "$BRANCH" \
-            --title "Wartung: nicht mehr handelbare Titel entfernen" \
-            --body-file pr_body.md \
-            || echo "Pull Request existiert bereits."
+          # Kein blindes `|| echo`: Der erste scharfe Lauf scheiterte an einer
+          # Repository-Einstellung, und die pauschale Ersatzmeldung behauptete
+          # stattdessen, der Pull Request existiere bereits. Die echte Ursache
+          # gehört ins Log.
+          if ! gh pr create \
+              --base "${{ github.ref_name }}" \
+              --head "$BRANCH" \
+              --title "Wartung: nicht mehr handelbare Titel entfernen" \
+              --body-file pr_body.md 2> pr_error.txt; then
+            cat pr_error.txt
+            if grep -q "already exists" pr_error.txt; then
+              echo "Pull Request existiert bereits — nichts zu tun."
+            elif grep -q "not permitted to create" pr_error.txt; then
+              echo "::error::GitHub Actions darf keine Pull Requests anlegen."
+              echo "Der Zweig '$BRANCH' ist gepusht und enthält die Änderung."
+              echo "Einmalig freischalten unter Settings → Actions → General →"
+              echo "'Allow GitHub Actions to create and approve pull requests'."
+              echo "Bis dahin lässt sich der Pull Request von Hand öffnen:"
+              echo "https://github.com/${{ github.repository }}/pull/new/$BRANCH"
+              exit 1
+            else
+              echo "::error::Pull Request konnte nicht angelegt werden."
+              exit 1
+            fi
+          fi
 
       - name: Nicht-mechanische Befunde als Issue melden
         if: steps.triage.outputs.has_manual == 'true'

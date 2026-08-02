@@ -24,6 +24,7 @@ benannt, nicht repariert.
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,17 +93,42 @@ class DoctorReport:
 # -- 1. Tote Ticker --------------------------------------------------------
 
 
+def _outage_finding(failed: int, total: int) -> list[Finding]:
+    """Störung, nicht Drift. Hier nichts zur Entfernung vorzuschlagen ist die
+    wichtigste Nicht-Aktion des ganzen Moduls."""
+    return [
+        Finding(
+            check="Datenquelle",
+            subject="Kurshistorie",
+            message=(
+                f"{failed} von {total} Titeln ohne Kursdaten "
+                f"({failed / total * 100:.0f}%). Das ist eine Störung der "
+                "Datenquelle, keine Index-Änderung — es wird nichts zur "
+                "Entfernung vorgeschlagen."
+            ),
+        )
+    ]
+
+
 def check_tickers(
     provider: MarketDataProvider,
     group: str = "all",
     workers: int = 8,
+    retry_delay: float = 2.0,
 ) -> tuple[list[Finding], int, str | None]:
-    """Fragt jeden Titel nach Kursdaten. Gibt Befunde, Anzahl und Abbruchgrund."""
+    """Fragt jeden Titel nach Kursdaten. Gibt Befunde, Anzahl und Abbruchgrund.
+
+    Wer beim ersten Versuch nichts liefert, wird ein zweites Mal gefragt —
+    einzeln und mit Pause. Ein einzelner fehlgeschlagener Abruf ist kein
+    Beleg für ein Delisting: Beim ersten scharfen Lauf standen unter zwanzig
+    gemeldeten Titeln fünf, die weiter gehandelt werden (BNY Mellon, Marsh &
+    McLennan, Fiserv, Coterra, Schaeffler). Sie waren nicht tot, sondern
+    kurz nicht erreichbar — parallele Abfragen laufen bei Yahoo gelegentlich
+    ins Leere.
+    """
     entries = load_universe(group)
     if not entries:
         return [], 0, "Universum leer"
-
-    dead: list[str] = []
 
     def probe(ticker: str) -> tuple[str, bool]:
         try:
@@ -111,31 +137,42 @@ def check_tickers(
             return ticker, False
         return ticker, not history.close.empty
 
+    suspects: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(probe, e.ticker) for e in entries]
         for future in as_completed(futures):
             ticker, alive = future.result()
             if not alive:
-                dead.append(ticker)
+                suspects.append(ticker)
+
+    # Störungsprüfung vor der zweiten Runde: Bei einem breiten Ausfall wären
+    # alle Titel Verdachtsfälle, und die einzelnen Wiederholungen mit Pause
+    # würden jedes Zeitlimit sprengen — für ein Ergebnis, das ohnehin
+    # verworfen wird.
+    if len(suspects) > len(entries) * OUTAGE_RATIO:
+        return _outage_finding(len(suspects), len(entries)), len(entries), (
+            "Ausfallquote zu hoch"
+        )
+
+    # Zweite Runde: nacheinander statt parallel, damit sich die Abfragen nicht
+    # gegenseitig ausbremsen, und mit Pause zwischen den Versuchen.
+    dead: list[str] = []
+    for ticker in suspects:
+        if retry_delay:
+            time.sleep(retry_delay)
+        if not probe(ticker)[1]:
+            dead.append(ticker)
+
+    if suspects and len(dead) < len(suspects):
+        log.info(
+            "%d von %d auffälligen Titeln antworteten im zweiten Versuch — "
+            "sie gelten nicht als tot.",
+            len(suspects) - len(dead), len(suspects),
+        )
 
     if len(dead) > len(entries) * OUTAGE_RATIO:
-        # Störung, nicht Drift. Ein Vorschlag, 200 Titel zu löschen, wäre hier
-        # das Gefährlichste, was das Werkzeug tun könnte.
-        return (
-            [
-                Finding(
-                    check="Datenquelle",
-                    subject="Kurshistorie",
-                    message=(
-                        f"{len(dead)} von {len(entries)} Titeln ohne Kursdaten "
-                        f"({len(dead) / len(entries) * 100:.0f}%). Das ist eine "
-                        "Störung der Datenquelle, keine Index-Änderung — es "
-                        "wird nichts zur Entfernung vorgeschlagen."
-                    ),
-                )
-            ],
-            len(entries),
-            "Ausfallquote zu hoch",
+        return _outage_finding(len(dead), len(entries)), len(entries), (
+            "Ausfallquote zu hoch"
         )
 
     findings = [
@@ -282,6 +319,7 @@ def run_doctor(
     with_fred: bool = True,
     skip_tickers: bool = False,
     skip_statements: bool = False,
+    retry_delay: float = 2.0,
 ) -> DoctorReport:
     """Führt alle Prüfungen aus und sammelt die Befunde."""
     report = DoctorReport()
@@ -289,7 +327,9 @@ def run_doctor(
     if skip_tickers:
         report.skipped.append("Ticker")
     else:
-        findings, count, aborted = check_tickers(provider, group)
+        findings, count, aborted = check_tickers(
+            provider, group, retry_delay=retry_delay
+        )
         report.findings.extend(findings)
         report.checked["Ticker"] = count
         if aborted:
