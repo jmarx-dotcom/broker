@@ -54,6 +54,12 @@ jobs:
           BRANCH="wartung/universum-$(date -u +%F)"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Läuft die Prüfung ein zweites Mal am selben Tag, existiert der
+          # Zweig bereits. Ohne diesen Fetch kennt der Runner ihn nicht, und
+          # --force-with-lease bricht mit "stale info" ab — der Lauf scheiterte
+          # dann am Push statt an der Sache.
+          git fetch origin "$BRANCH" 2>/dev/null || true
           git checkout -B "$BRANCH"
 
           # Aus dem vorhandenen Bericht reparieren, nicht neu prüfen: Ein
