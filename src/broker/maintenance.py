@@ -39,6 +39,16 @@ log = logging.getLogger(__name__)
 #: Ticker zur Löschung vorzuschlagen.
 OUTAGE_RATIO = 0.20
 
+#: Erster Durchgang: kurze Historie, weil 674 Abrufe sonst dauern.
+PROBE_PERIOD = "1mo"
+
+#: Zweiter Durchgang — und zwar mit *derselben* Anfrage, die der Screener
+#: stellt (`history(period="3y")`). Das ist keine Feinheit, sondern die
+#: Definition: "tot" soll heißen "der Screener kann den Titel nicht mehr
+#: verwenden", nicht "ein anderer, kürzerer Abruf kam leer zurück". Solange
+#: die Prüfung etwas anderes fragt als der Screener, misst sie das Falsche.
+CONFIRM_PERIOD = "3y"
+
 #: Stichprobe für die Abschlussfelder. Größer bringt wenig: Ein umbenanntes
 #: Feld fehlt bei *allen* Titeln, nicht bei einzelnen.
 STATEMENT_SAMPLE = 40
@@ -119,20 +129,29 @@ def check_tickers(
     """Fragt jeden Titel nach Kursdaten. Gibt Befunde, Anzahl und Abbruchgrund.
 
     Wer beim ersten Versuch nichts liefert, wird ein zweites Mal gefragt —
-    einzeln und mit Pause. Ein einzelner fehlgeschlagener Abruf ist kein
-    Beleg für ein Delisting: Beim ersten scharfen Lauf standen unter zwanzig
-    gemeldeten Titeln fünf, die weiter gehandelt werden (BNY Mellon, Marsh &
-    McLennan, Fiserv, Coterra, Schaeffler). Sie waren nicht tot, sondern
-    kurz nicht erreichbar — parallele Abfragen laufen bei Yahoo gelegentlich
-    ins Leere.
+    einzeln, mit Pause, und mit `CONFIRM_PERIOD` statt `PROBE_PERIOD`.
+
+    Die zweite Runde entstand aus einer falschen Vermutung. Nach dem ersten
+    scharfen Lauf hielt ich fünf der zwanzig gemeldeten Titel für lebendig
+    (BNY Mellon, Marsh & McLennan, Fiserv, Coterra, Schaeffler) und nahm an,
+    sie seien beim parallelen Abruf kurz nicht erreichbar gewesen. Drei Läufe
+    an drei Tagen lieferten danach exakt dieselben zwanzig Namen. Ein
+    Wackelkontakt sieht anders aus: Er trifft jedes Mal andere. Was sich
+    wiederholt, ist nicht zufällig.
+
+    Damit bleiben zwei Erklärungen — die Titel sind wirklich weg, oder die
+    Prüfung fragt falsch. Die zweite Runde trennt sie, indem sie mit
+    derselben Anfrage nachfasst wie der Screener. Antwortet ein Titel darauf,
+    war nicht er tot, sondern die kurze Abfrage untauglich; das steht dann im
+    Log und nicht im Löschvorschlag.
     """
     entries = load_universe(group)
     if not entries:
         return [], 0, "Universum leer"
 
-    def probe(ticker: str) -> tuple[str, bool]:
+    def probe(ticker: str, period: str = PROBE_PERIOD) -> tuple[str, bool]:
         try:
-            history = provider.history(ticker, period="1mo")
+            history = provider.history(ticker, period=period)
         except Exception:
             return ticker, False
         return ticker, not history.close.empty
@@ -155,19 +174,24 @@ def check_tickers(
         )
 
     # Zweite Runde: nacheinander statt parallel, damit sich die Abfragen nicht
-    # gegenseitig ausbremsen, und mit Pause zwischen den Versuchen.
+    # gegenseitig ausbremsen, mit Pause zwischen den Versuchen — und mit der
+    # Anfrage des Screeners.
     dead: list[str] = []
-    for ticker in suspects:
+    revived: list[str] = []
+    for ticker in sorted(suspects):
         if retry_delay:
             time.sleep(retry_delay)
-        if not probe(ticker)[1]:
+        if probe(ticker, CONFIRM_PERIOD)[1]:
+            revived.append(ticker)
+        else:
             dead.append(ticker)
 
-    if suspects and len(dead) < len(suspects):
-        log.info(
-            "%d von %d auffälligen Titeln antworteten im zweiten Versuch — "
-            "sie gelten nicht als tot.",
-            len(suspects) - len(dead), len(suspects),
+    if revived:
+        log.warning(
+            "%d Titel antworteten auf %s nicht, auf %s aber schon: %s. Sie "
+            "gelten nicht als tot — und die kurze Abfrage ist als Prüfung "
+            "ungeeignet.",
+            len(revived), PROBE_PERIOD, CONFIRM_PERIOD, ", ".join(revived),
         )
 
     if len(dead) > len(entries) * OUTAGE_RATIO:

@@ -413,11 +413,22 @@ Geprüft wird gegen die lebenden Schnittstellen, nicht gegen Logtext: Ein
 Logformat ändert sich, sobald jemand eine Meldung umformuliert, die Frage
 „antwortet diese Reihe noch?" bleibt dieselbe.
 
-**Zwei Runden vor jedem Löschvorschlag.** Wer beim ersten Abruf nichts liefert,
-wird ein zweites Mal gefragt — einzeln und mit Pause. Ein einzelner
-fehlgeschlagener Abruf ist kein Beleg für ein Delisting: Beim ersten scharfen
-Lauf standen unter zwanzig gemeldeten Titeln fünf, die weiter gehandelt werden.
-Sie waren nicht tot, sondern kurz nicht erreichbar.
+**Zwei Runden vor jedem Löschvorschlag — und die zweite fragt anders.** Der
+erste Durchgang holt eine kurze Historie (`1mo`), weil 674 Abrufe sonst dauern.
+Wer daraufhin nichts liefert, wird einzeln und mit Pause noch einmal gefragt,
+diesmal mit **derselben Anfrage, die der Screener stellt** (`3y`).
+
+Das ist keine Feinheit, sondern die Definition: „tot" soll heißen *der Screener
+kann den Titel nicht mehr verwenden* — nicht *ein anderer, kürzerer Abruf kam
+leer zurück*. Solange die Prüfung etwas anderes fragt als der Screener, misst
+sie das Falsche. Antwortet ein Titel auf `3y`, landet er nicht im
+Löschvorschlag, sondern als Warnung im Log.
+
+Die zweite Runde entstand aus einer falschen Vermutung. Beim ersten scharfen
+Lauf hielt ich fünf der zwanzig gemeldeten Titel für lebendig und nahm an, sie
+seien kurz nicht erreichbar gewesen. Drei Läufe an drei Tagen lieferten danach
+exakt dieselben zwanzig Namen — ein Wackelkontakt trifft jedes Mal andere. Die
+zweite Runde blieb richtig, die Begründung war es nicht.
 
 **Die wichtigste Sicherung ist eine Nicht-Aktion.** Fallen mehr als 20 % der
 Titel gleichzeitig aus, ist nicht das Universum veraltet, sondern die

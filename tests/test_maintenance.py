@@ -437,7 +437,13 @@ class TestRetryBeforeDeclaringDead:
 
     Der erste scharfe Lauf meldete zwanzig tote Titel, darunter fünf, die
     weiter gehandelt werden — BNY Mellon, Marsh & McLennan, Fiserv, Coterra,
-    Schaeffler. Sie waren nicht tot, sondern kurz nicht erreichbar.
+    Schaeffler.
+
+    Meine erste Erklärung war "kurz nicht erreichbar". Sie war falsch: Drei
+    Läufe an drei Tagen meldeten exakt dieselben zwanzig Namen, und ein
+    Wackelkontakt trifft jedes Mal andere. Die zweite Runde bleibt trotzdem
+    richtig — nur prüft sie jetzt das, was sie prüfen soll (siehe
+    `TestProbeAsksWhatTheScreenerAsks`).
     """
 
     class Flaky(FakeProvider):
@@ -526,3 +532,63 @@ class TestRetryBeforeDeclaringDead:
 
         check_tickers(FakeProvider(dead={"A.DE"}), workers=4, retry_delay=1.5)
         assert slept == [1.5]  # nur der eine Verdachtsfall
+
+
+class TestProbeAsksWhatTheScreenerAsks:
+    """"Tot" muss heißen: der Screener kann den Titel nicht mehr verwenden.
+
+    Solange die Prüfung mit `1mo` fragt und der Screener mit `3y` arbeitet,
+    misst sie etwas anderes als das, worüber sie urteilt. Ein Titel, dessen
+    kurze Historie leer zurückkommt, dessen lange aber Kurse liefert, ist
+    kein Fall fürs Löschen — er ist ein Beleg dafür, dass die kurze Abfrage
+    als Prüfung untauglich ist.
+    """
+
+    class ShortHistoryEmpty(FakeProvider):
+        """Liefert nur auf lange Zeiträume Daten."""
+
+        def __init__(self, only_long: set[str], **kw):
+            super().__init__(**kw)
+            self.only_long = set(only_long)
+            self.asked: list[tuple[str, str]] = []
+
+        def history(self, ticker: str, period: str = "3y"):
+            self.asked.append((ticker, period))
+            if ticker in self.only_long and period != "3y":
+                return PriceHistory(
+                    ticker=ticker,
+                    frame=pd.DataFrame(
+                        {"Close": [], "Volume": []}, index=pd.to_datetime([])
+                    ),
+                )
+            return super().history(ticker, period)
+
+    def test_title_with_data_under_the_screener_period_survives(self, monkeypatch):
+        from broker import maintenance
+
+        universe = ["MMC", "FI"] + [f"OK{i}.DE" for i in range(30)]
+        monkeypatch.setattr(
+            maintenance, "load_universe",
+            lambda group="all": [_entry(t) for t in universe],
+        )
+        provider = self.ShortHistoryEmpty(only_long={"MMC", "FI"})
+        findings, _, aborted = check_tickers(provider, workers=4, retry_delay=0)
+
+        assert aborted is None
+        assert findings == []
+
+    def test_second_round_uses_the_screener_period(self, monkeypatch):
+        """Ohne diese Zusicherung wäre die zweite Runde nur eine Wiederholung."""
+        from broker import maintenance
+
+        universe = ["ANSS"] + [f"OK{i}.DE" for i in range(30)]
+        monkeypatch.setattr(
+            maintenance, "load_universe",
+            lambda group="all": [_entry(t) for t in universe],
+        )
+        provider = self.ShortHistoryEmpty(only_long=set(), dead={"ANSS"})
+        findings, _, _ = check_tickers(provider, workers=4, retry_delay=0)
+
+        assert [f.subject for f in findings] == ["ANSS"]
+        periods = [p for t, p in provider.asked if t == "ANSS"]
+        assert periods == [maintenance.PROBE_PERIOD, maintenance.CONFIRM_PERIOD]
