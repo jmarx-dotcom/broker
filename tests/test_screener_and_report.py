@@ -317,6 +317,72 @@ class TestRetryOnThrottling:
 
         assert slept == [7.5]
 
+    def test_several_windows_are_waited_out(self, monkeypatch):
+        """Ein Fenster von ~340 Abrufen reicht für ~900 nicht — mehrere schon.
+
+        Am 5. und 6. August kamen 342 und 334 Titel durch, dann sperrte Yahoo.
+        Ein Lauf über das ganze Universum braucht rund 900 Abrufe. Der einzige
+        Weg dahin ist das nächste Zeitfenster.
+        """
+        from broker import screener as screener_module
+
+        slept: list[float] = []
+        monkeypatch.setattr(screener_module.time, "sleep", lambda s: slept.append(s))
+
+        from broker.screener import ScreeningStats
+
+        # Ein Fenster lässt 40 Abrufe durch, dann sperrt es bis zur nächsten
+        # Runde — dasselbe Verhältnis wie 340 von 900 in echt.
+        window = {"left": 40}
+
+        def call(key: str) -> str:
+            if window["left"] <= 0:
+                raise ProviderError("Too Many Requests. Rate limited.")
+            window["left"] -= 1
+            return key
+
+        def open_window(_seconds):
+            slept.append(_seconds)
+            window["left"] = 40
+
+        monkeypatch.setattr(screener_module.time, "sleep", open_window)
+
+        config = Config(thresholds=Thresholds())
+        screener = Screener(config, provider=None, workers=4, retry_pause=5)  # type: ignore[arg-type]
+        stats = ScreeningStats()
+        found = screener._gather(
+            [f"T{i}" for i in range(100)], call, "Fundamentaldaten", stats
+        )
+
+        assert len(found) == 100, "alle Titel über mehrere Fenster geholt"
+        assert stats.errors == {}
+        assert len(slept) == 2, "zwei Fenster abgewartet"
+
+    def test_waiting_stops_when_a_round_brings_nothing_back(self, monkeypatch):
+        """Die eigentliche Abbruchregel: Erholung entscheidet, nicht die Rundenzahl.
+
+        Bringt eine Pause keinen einzigen Titel zurück, ist es keine
+        Drosselung — dann ist weiteres Warten nur ein Lauf, der ins Zeitlimit
+        kriecht, statt das Problem zu melden.
+        """
+        from broker import screener as screener_module
+
+        slept: list[float] = []
+        monkeypatch.setattr(screener_module.time, "sleep", lambda s: slept.append(s))
+
+        entries, base = build_universe()
+        # Vier Titel sind dauerhaft weg — keine Runde holt sie zurück.
+        gone = dict(base._fundamentals)
+        for ticker in ("PEER1.DE", "PEER2.DE", "TINY.DE", "LOSS.DE"):
+            del gone[ticker]
+        provider = FakeProvider(gone, base._histories)
+        config = Config(thresholds=Thresholds(min_score=0.0, min_history_days=200))
+        Screener(config, provider, workers=2, retry_pause=5).run(
+            entries, neutral_regime()
+        )
+
+        assert len(slept) == 1, "nach der ersten ergebnislosen Runde Schluss"
+
 
 class TestReport:
     def test_html_contains_candidates_and_disclaimer(self, screening_result):

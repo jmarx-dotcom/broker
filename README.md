@@ -425,12 +425,35 @@ Eine Handvoll Titel, die nur deshalb Treffer wurden, weil ihre Konkurrenz an
 einem Abrufproblem hängenblieb, verzerrt jede spätere Auswertung — und die
 Kontrollgruppe, aus einer Rumpfmenge gezogen, misst gegen nichts.
 
-Gegen die Ursache läuft eine zweite Runde: Abgewiesene Abrufe werden nach einer
-Pause und mit zwei statt acht gleichzeitigen Verbindungen wiederholt. Nur einmal
-— wer beliebig oft nachfasst, verwandelt eine harte Störung in einen Lauf, der
-ins Zeitlimit kriecht, statt sie zu melden. Und nur, wenn der Ausfall überhaupt
-nach Drosselung aussieht: Zwanzig Sekunden Pause wegen eines delisteten Titels
-wären verschwendet.
+### Die Ursache: Yahoos Zeitfenster
+
+Der Fehlertext ist eindeutig:
+
+```
+Too Many Requests. Rate limited. Try after a while.
+```
+
+Ein Lauf über das ganze Universum braucht rund 674 Fundamentaldaten-Abrufe plus
+etwa 220 Kurshistorien, zusammen gut 900. Durchgekommen sind 342 (5. August) und
+334 (6. August) — beide Male etwa ein Drittel. Durch ein Fenster von 340 bekommt
+man 900 Abrufe mit keinem Tempo. Nur durch das nächste Fenster.
+
+Deshalb wartet der Lauf bei Drosselung bis zu dreimal je zwei Minuten und holt
+die offenen Abrufe mit zwei statt acht Verbindungen nach. **Abgebrochen wird,
+sobald eine Runde nichts zurückholt** — das ist die eigentliche Regel: Bringt
+eine Pause keinen einzigen Titel zurück, ist es keine Drosselung, und weiteres
+Warten schafft nur einen Lauf, der ins Zeitlimit kriecht, statt das Problem zu
+melden. Die Rundenzahl begrenzt, die Erholung entscheidet.
+
+Gewartet wird ohnehin nur, wenn der Ausfall nach Drosselung aussieht: Zwei
+Minuten Pause wegen eines delisteten Titels wären verschwendet.
+
+Dass das reicht, ist damit nicht bewiesen — am 3. August lief derselbe Code über
+dasselbe Universum ohne Wiederholung durch und lieferte 15 Treffer. Wie viel
+Kontingent übrig ist, hängt auch daran, wie viel andere GitHub-Runner unter
+derselben Adresse schon verbraucht haben. Bleibt es dabei, ist der ehrliche
+nächste Schritt kein weiteres Nachfassen, sondern ein Datenanbieter mit
+zugesicherten Kontingenten.
 
 ## Wartung — die Drift-Prüfung
 

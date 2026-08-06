@@ -50,9 +50,19 @@ BENCHMARKS = {"US": "^GSPC", "DE": "^GDAXI", "EU": "^STOXX50E"}
 MIN_DATA_COVERAGE = 0.5
 MIN_SCORING_COVERAGE = 0.5
 
-#: Zweite Runde für abgewiesene Abrufe: wenige gleichzeitig, nach einer Pause.
+#: Wiederholungsrunden für abgewiesene Abrufe: wenige gleichzeitig, nach einer
+#: echten Pause.
+#:
+#: Yahoos Antwort lautet wörtlich "Too Many Requests. Rate limited. Try after a
+#: while." — zwanzig Sekunden sind kein "a while". Und die Rechnung zeigt, dass
+#: Warten der einzige Hebel ist: Ein Lauf über das ganze Universum braucht rund
+#: 674 Fundamentaldaten plus etwa 220 Kurshistorien, also gut 900 Abrufe. Bei
+#: etwa 340 war zweimal Schluss (342 am 5., 334 am 6. August). Durch ein
+#: Fenster von 340 bekommt man 900 Abrufe mit keinem Tempo — nur durch das
+#: nächste Fenster.
 RETRY_WORKERS = 2
-RETRY_PAUSE = 20.0
+RETRY_PAUSE = 120.0
+RETRY_ROUNDS = 3
 
 #: Ab diesem Anteil sieht ein Ausfall nach Drosselung aus und nicht mehr nach
 #: einzelnen toten Titeln. Nur dann lohnt die langsame zweite Runde: Zwanzig
@@ -217,43 +227,59 @@ class Screener:
         return found, failed
 
     def _gather(self, keys, call, label: str, stats: ScreeningStats) -> dict:
-        """Holt alles — und fasst bei Ausfällen einmal langsamer nach.
+        """Holt alles — und wartet bei Ausfällen das Drosselungsfenster ab.
 
-        Yahoo weist unter Last ab. Der DAX-Lauf mit 40 Titeln hatte null
-        Fehler, der Lauf über alle 674 Titel am 5. August hatte 548: erst 332
-        Fundamentaldaten-Abrufe, dann 216 von 217 Kurshistorien. Das ist kein
-        Ausfall der Schnittstelle, sondern eine Drosselung — dieselben Titel
-        antworten kurz darauf wieder.
+        Yahoo weist unter Last ab, wörtlich mit "Too Many Requests. Rate
+        limited. Try after a while." Dieselben Titel antworten später wieder:
+        Am 3. August lief derselbe Code über dasselbe Universum durch und
+        lieferte 15 Treffer.
 
-        Deshalb eine zweite Runde für die Ausfälle: nach einer Pause und mit
-        wenigen gleichzeitigen Abrufen statt acht. Bewusst nur eine — wer
-        beliebig oft nachfasst, verwandelt eine harte Störung in einen Lauf,
-        der ins Zeitlimit kriecht, statt sie zu melden.
+        Deshalb bis zu `RETRY_ROUNDS` weitere Runden für die Ausfälle, jeweils
+        nach einer echten Pause und mit wenigen gleichzeitigen Abrufen.
 
-        Langsam nachgefasst wird aber nur, wenn der Ausfall überhaupt nach
-        Drosselung aussieht. Einzelne Titel fallen aus, weil sie delistet sind;
-        dafür zwanzig Sekunden zu warten, hilft niemandem.
+        Abgebrochen wird, sobald eine Runde *nichts* zurückholt. Das ist die
+        eigentliche Regel: Bringt eine Pause keinen einzigen Titel zurück, ist
+        es keine Drosselung, und weiteres Warten schafft nur einen Lauf, der
+        ins Zeitlimit kriecht, statt das Problem zu melden. Die Rundenzahl
+        begrenzt, die Erholung entscheidet.
+
+        Gewartet wird ohnehin nur, wenn der Ausfall nach Drosselung aussieht.
+        Einzelne Titel fallen aus, weil sie delistet sind; dafür zwei Minuten
+        zu warten, hilft niemandem.
         """
         keys = list(keys)
         found, failed = self._attempt(keys, call, self.workers)
-        if failed:
+
+        for round_no in range(1, RETRY_ROUNDS + 1):
+            if not failed:
+                break
             throttled = len(failed) > max(3, len(keys) * THROTTLE_HINT)
             workers = self.retry_workers if throttled else self.workers
             log.warning(
-                "%s: %d von %d Abrufen fehlgeschlagen — zweite Runde mit %d "
-                "gleichzeitigen Abrufen%s.",
-                label, len(failed), len(keys), workers,
+                "%s: %d von %d Abrufen offen — Runde %d mit %d gleichzeitigen "
+                "Abrufen%s.",
+                label, len(failed), len(keys), round_no, workers,
                 f" nach {self.retry_pause:.0f} Sekunden Pause" if throttled else "",
             )
             if throttled and self.retry_pause:
                 time.sleep(self.retry_pause)
+
             recovered, failed = self._attempt(list(failed), call, workers)
             found.update(recovered)
-            if recovered:
-                log.info(
-                    "%s: %d Titel antworteten in der zweiten Runde.",
-                    label, len(recovered),
+            if not recovered:
+                log.warning(
+                    "%s: Runde %d holte keinen einzigen Titel zurück — das ist "
+                    "keine Drosselung. Weiteres Warten würde nichts ändern.",
+                    label, round_no,
                 )
+                break
+            log.info(
+                "%s: %d Titel antworteten in Runde %d, %d bleiben offen.",
+                label, len(recovered), round_no, len(failed),
+            )
+            if not throttled:
+                # Einzelne Ausfälle: einmal nachfassen reicht, der Rest ist tot.
+                break
 
         for key, message in failed.items():
             stats.errors[key] = f"{label}: {message}"
