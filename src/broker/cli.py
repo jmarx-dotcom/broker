@@ -118,7 +118,16 @@ def cmd_screen(args: argparse.Namespace) -> int:
 
     journal = Journal(config.journal_path)
     appearances: dict[str, int] = {}
-    if not args.no_journal:
+    if result.trouble:
+        # Ein gestörter Lauf darf nichts ins Journal schreiben. Das Journal ist
+        # die Lerngrundlage: Was hier landet, wird Monate später als Beleg
+        # gelesen. Eine Handvoll Titel, die nur deshalb Treffer wurden, weil
+        # ihre Konkurrenz an einem Abrufproblem hängenblieb, verzerrt jede
+        # spätere Auswertung — und die Kontrollgruppe, aus einer Rumpfmenge
+        # gezogen, misst dann gegen nichts.
+        log.error("Lauf unvollständig: %s", result.trouble)
+        log.error("Es wird nichts ins Journal übernommen.")
+    elif not args.no_journal:
         written = journal.append(
             result.candidates, BENCHMARKS, control=result.control
         )
@@ -138,7 +147,10 @@ def cmd_screen(args: argparse.Namespace) -> int:
 
     # Ausgabe --------------------------------------------------------------
     print()
-    if not result.candidates:
+    if result.trouble:
+        print("Lauf unvollständig — keine Aussage über den Markt möglich.")
+        print(result.trouble)
+    elif not result.candidates:
         print("Keine Treffer über der Score-Schwelle.")
     else:
         print(f"{'Score':>5}  {'Ticker':<12} {'KGV':>6} {'RSI':>5} {'Läufe':>6}  Titel")
@@ -180,7 +192,10 @@ def cmd_screen(args: argparse.Namespace) -> int:
         if outcome.failed:
             print(f"Benachrichtigung fehlgeschlagen: {', '.join(outcome.failed)}")
 
-    return 0
+    # Erst nach dem Versand: Die Nachricht über den gestörten Lauf ist gerade
+    # dann wichtig, wenn der Lauf gestört war. Beide Folgeschritte im Workflow
+    # laufen unter `if: always()`, der Report geht also trotzdem ins Artifact.
+    return 1 if result.trouble else 0
 
 
 def cmd_macro(args: argparse.Namespace) -> int:

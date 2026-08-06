@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
@@ -39,6 +40,27 @@ log = logging.getLogger(__name__)
 BENCHMARKS = {"US": "^GSPC", "DE": "^GDAXI", "EU": "^STOXX50E"}
 
 
+#: Unterhalb dieser Abdeckung sagt ein Lauf nichts mehr über den Markt aus.
+#:
+#: Die Hälfte ist keine feinjustierte Zahl, sondern die Grenze, ab der der Satz
+#: "keine Treffer" aufhört, eine Aussage über den Markt zu sein. Wer von 217
+#: Titeln einen bewertet hat, hat nicht nichts gefunden — er hat nicht
+#: nachgesehen. Beides klingt am Ende gleich, und genau deshalb muss der
+#: Unterschied ausgerechnet und ausgesprochen werden.
+MIN_DATA_COVERAGE = 0.5
+MIN_SCORING_COVERAGE = 0.5
+
+#: Zweite Runde für abgewiesene Abrufe: wenige gleichzeitig, nach einer Pause.
+RETRY_WORKERS = 2
+RETRY_PAUSE = 20.0
+
+#: Ab diesem Anteil sieht ein Ausfall nach Drosselung aus und nicht mehr nach
+#: einzelnen toten Titeln. Nur dann lohnt die langsame zweite Runde: Zwanzig
+#: Sekunden Pause wegen eines delisteten Titels wären verschwendet, und die
+#: Drosselung wartet man mit voller Nebenläufigkeit ohnehin nicht aus.
+THROTTLE_HINT = 0.05
+
+
 @dataclass
 class ScreeningStats:
     universe_size: int = 0
@@ -56,6 +78,57 @@ class ScreeningStats:
             f"{len(self.errors)} Fehler"
         )
 
+    @property
+    def data_coverage(self) -> float | None:
+        """Anteil des Universums, der überhaupt Fundamentaldaten lieferte."""
+        if not self.universe_size:
+            return None
+        return self.fundamentals_ok / self.universe_size
+
+    @property
+    def scoring_coverage(self) -> float | None:
+        """Anteil der Filter-Überlebenden, der tatsächlich bewertet wurde.
+
+        Das ist das schärfere der beiden Maße: Wer die harten Filter passiert
+        hat, *soll* bewertet werden. Fällt er stattdessen mit einem Fehler aus,
+        fehlt er in der Trefferliste, ohne je geprüft worden zu sein.
+        """
+        if not self.passed_filters:
+            return None
+        return self.scored / self.passed_filters
+
+    @property
+    def trouble(self) -> str | None:
+        """Warum dieser Lauf nichts über den Markt aussagt — oder None.
+
+        Kein Wahrheitswert, sondern ein Satz: Wer die Warnung liest, soll ohne
+        Rückfrage wissen, woran es lag.
+        """
+        if not self.universe_size:
+            return "Das Universum ist leer — es wurde kein Titel geprüft."
+
+        data = self.data_coverage
+        if data is not None and data < MIN_DATA_COVERAGE:
+            return (
+                f"Nur {self.fundamentals_ok} von {self.universe_size} Titeln "
+                f"lieferten überhaupt Daten ({data:.0%}). Die Datenquelle hat "
+                "den Lauf nicht bedient."
+            )
+
+        scoring = self.scoring_coverage
+        if scoring is not None and scoring < MIN_SCORING_COVERAGE:
+            return (
+                f"Von {self.passed_filters} Titeln, die die Filter passiert "
+                f"haben, wurden nur {self.scored} bewertet ({scoring:.0%}) — "
+                f"bei {len(self.errors)} Fehlern. Die übrigen sind nicht "
+                "durchgefallen, sie wurden nie geprüft."
+            )
+        return None
+
+    @property
+    def degraded(self) -> bool:
+        return self.trouble is not None
+
 
 @dataclass
 class ScreeningResult:
@@ -66,6 +139,14 @@ class ScreeningResult:
     #: Ohne sie könnte das Journal nur zeigen, wie sich die Treffer entwickelt
     #: haben, nicht ob die Auswahl überhaupt etwas taugt.
     control: list[Candidate] = field(default_factory=list)
+
+    @property
+    def trouble(self) -> str | None:
+        return self.stats.trouble
+
+    @property
+    def degraded(self) -> bool:
+        return self.stats.degraded
 
 
 #: Größe der Kontrollgruppe je Lauf. In derselben Größenordnung wie die
@@ -106,46 +187,99 @@ def _benchmark_key(entry: UniverseEntry) -> str:
 
 class Screener:
     def __init__(
-        self, config: Config, provider: MarketDataProvider, workers: int = 8
+        self,
+        config: Config,
+        provider: MarketDataProvider,
+        workers: int = 8,
+        retry_workers: int = RETRY_WORKERS,
+        retry_pause: float = RETRY_PAUSE,
     ) -> None:
         self.config = config
         self.provider = provider
         self.workers = max(1, workers)
+        self.retry_workers = max(1, retry_workers)
+        self.retry_pause = retry_pause
 
     # -- Datenbeschaffung -------------------------------------------------
+
+    def _attempt(self, keys, call, workers: int) -> tuple[dict, dict[str, str]]:
+        """Ruft `call` für alle Schlüssel parallel auf. Gibt Treffer und Fehler."""
+        found: dict = {}
+        failed: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(call, key): key for key in keys}
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    found[key] = future.result()
+                except Exception as exc:
+                    failed[key] = str(exc)
+        return found, failed
+
+    def _gather(self, keys, call, label: str, stats: ScreeningStats) -> dict:
+        """Holt alles — und fasst bei Ausfällen einmal langsamer nach.
+
+        Yahoo weist unter Last ab. Der DAX-Lauf mit 40 Titeln hatte null
+        Fehler, der Lauf über alle 674 Titel am 5. August hatte 548: erst 332
+        Fundamentaldaten-Abrufe, dann 216 von 217 Kurshistorien. Das ist kein
+        Ausfall der Schnittstelle, sondern eine Drosselung — dieselben Titel
+        antworten kurz darauf wieder.
+
+        Deshalb eine zweite Runde für die Ausfälle: nach einer Pause und mit
+        wenigen gleichzeitigen Abrufen statt acht. Bewusst nur eine — wer
+        beliebig oft nachfasst, verwandelt eine harte Störung in einen Lauf,
+        der ins Zeitlimit kriecht, statt sie zu melden.
+
+        Langsam nachgefasst wird aber nur, wenn der Ausfall überhaupt nach
+        Drosselung aussieht. Einzelne Titel fallen aus, weil sie delistet sind;
+        dafür zwanzig Sekunden zu warten, hilft niemandem.
+        """
+        keys = list(keys)
+        found, failed = self._attempt(keys, call, self.workers)
+        if failed:
+            throttled = len(failed) > max(3, len(keys) * THROTTLE_HINT)
+            workers = self.retry_workers if throttled else self.workers
+            log.warning(
+                "%s: %d von %d Abrufen fehlgeschlagen — zweite Runde mit %d "
+                "gleichzeitigen Abrufen%s.",
+                label, len(failed), len(keys), workers,
+                f" nach {self.retry_pause:.0f} Sekunden Pause" if throttled else "",
+            )
+            if throttled and self.retry_pause:
+                time.sleep(self.retry_pause)
+            recovered, failed = self._attempt(list(failed), call, workers)
+            found.update(recovered)
+            if recovered:
+                log.info(
+                    "%s: %d Titel antworteten in der zweiten Runde.",
+                    label, len(recovered),
+                )
+
+        for key, message in failed.items():
+            stats.errors[key] = f"{label}: {message}"
+        return found
 
     def _fetch_fundamentals(
         self, entries: list[UniverseEntry], stats: ScreeningStats
     ) -> dict[str, Fundamentals]:
-        result: dict[str, Fundamentals] = {}
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {
-                pool.submit(self.provider.fundamentals, e.ticker): e for e in entries
-            }
-            for future in as_completed(futures):
-                entry = futures[future]
-                try:
-                    result[entry.ticker] = future.result()
-                except (ProviderError, Exception) as exc:
-                    stats.errors[entry.ticker] = f"Fundamentaldaten: {exc}"
+        result = self._gather(
+            [e.ticker for e in entries],
+            self.provider.fundamentals,
+            "Fundamentaldaten",
+            stats,
+        )
         stats.fundamentals_ok = len(result)
         return result
 
     def _fetch_histories(
         self, tickers: list[str], stats: ScreeningStats, period: str = "3y"
     ) -> dict[str, PriceHistory]:
-        result: dict[str, PriceHistory] = {}
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {
-                pool.submit(self.provider.history, t, period): t for t in tickers
-            }
-            for future in as_completed(futures):
-                ticker = futures[future]
-                try:
-                    result[ticker] = future.result()
-                except (ProviderError, Exception) as exc:
-                    stats.errors[ticker] = f"Kurshistorie: {exc}"
-        return result
+        return self._gather(
+            tickers,
+            lambda t: self.provider.history(t, period),
+            "Kurshistorie",
+            stats,
+        )
 
     def _fetch_benchmarks(self) -> dict[str, pd.Series]:
         benchmarks: dict[str, pd.Series] = {}

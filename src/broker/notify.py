@@ -35,7 +35,22 @@ class NotificationOutcome:
 
 
 def build_summary(result: ScreeningResult, limit: int = 10) -> str:
-    """Kurzfassung als Klartext, für Telegram und den Mail-Betreff."""
+    """Kurzfassung als Klartext, für Telegram und den Mail-Betreff.
+
+    Ein gestörter Lauf darf sich nicht als ruhiger Markt ausgeben. Am 4. und
+    5. August meldete diese Funktion zwei Tage lang "keine Treffer über der
+    Score-Schwelle", während von 217 gefilterten Titeln genau einer bewertet
+    worden war — die übrigen 216 hatte Yahoo abgewiesen. Die Nachricht war
+    beruhigend und falsch, und ohne einen Blick ins Log war ihr das nicht
+    anzusehen.
+    """
+    if result.trouble:
+        return (
+            "Aktien-Screening: Lauf unvollständig — keine Aussage möglich.\n\n"
+            f"{result.trouble}\n\n"
+            "Es wurde nichts ins Journal übernommen."
+        )
+
     if not result.candidates:
         return "Aktien-Screening: keine Treffer über der Score-Schwelle."
 
@@ -276,8 +291,13 @@ def send_all(subject: str, body: str, attachment: Path | None = None):
 
 
 def notify(result: ScreeningResult, report_path: Path | None = None):
+    subject = (
+        "Aktien-Screening: Lauf unvollständig"
+        if result.degraded
+        else f"Aktien-Screening: {len(result.candidates)} Treffer"
+    )
     return send_all(
-        subject=f"Aktien-Screening: {len(result.candidates)} Treffer",
+        subject=subject,
         body=build_summary(result),
         attachment=report_path,
     )

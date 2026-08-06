@@ -387,6 +387,51 @@ Der Zeitplan übergibt keine Eingaben — über das Universum des täglichen Lau
 entscheidet deshalb der Ersatzwert in der `run`-Zeile, nicht der `default` unter
 `workflow_dispatch`. Beide stehen auf `all`; wer das ändert, muss beide ändern.
 
+**Geplante Läufe kommen zu spät, und zwar systematisch.** GitHub stellt
+`schedule`-Läufe in eine Warteschlange und liefert sie aus, wenn Kapazität frei
+ist. Bisher lag der Verzug bei 90 bis 99 Minuten. Dagegen lässt sich nichts
+einstellen — wer die Nachricht zu einer bestimmten Zeit braucht, muss den Cron
+entsprechend früher setzen.
+
+### Ein gestörter Lauf sagt das
+
+Am 4. und 5. August meldete das Werkzeug zwei Tage hintereinander „keine Treffer
+über der Score-Schwelle". Tatsächlich waren von 674 Titeln nur 342 mit Daten
+angekommen, und von 217 Titeln, die die harten Filter passiert hatten, wurde
+**genau einer** bewertet — 548 Abrufe hatte Yahoo abgewiesen. Der DAX-Lauf über
+40 Titel am selben Code hatte null Fehler. Nicht die Titel waren das Problem,
+sondern ihre Zahl.
+
+Die Nachricht war beruhigend und falsch, und ohne einen Blick ins Log war ihr
+das nicht anzusehen. Das ist dieselbe Fehlerart wie „Kein Benachrichtigungskanal
+konfiguriert" und „Pull Request existiert bereits": eine Ersatzmeldung, die eine
+harmlose Ursache behauptet und die echte verdeckt.
+
+Der Lauf rechnet deshalb jetzt zwei Abdeckungen aus und spricht sie aus:
+
+| Maß | Frage | Untergrenze |
+|---|---|---|
+| Datenabdeckung | Wie viele Titel lieferten überhaupt Daten? | 50 % |
+| Bewertungsabdeckung | Wie viele der gefilterten Titel wurden bewertet? | 50 % |
+
+Fällt eine darunter, gilt der Lauf als unvollständig. Dann sagen Telegram,
+Konsole und HTML-Report „Lauf unvollständig — keine Aussage über den Markt
+möglich" samt Zahlen, **nichts** geht ins Journal, und der Workflow endet rot.
+Die Hälfte ist keine feinjustierte Zahl, sondern die Grenze, ab der „keine
+Treffer" aufhört, eine Aussage über den Markt zu sein.
+
+Der Journalschutz ist der wichtigere Teil: Das Journal ist die Lerngrundlage.
+Eine Handvoll Titel, die nur deshalb Treffer wurden, weil ihre Konkurrenz an
+einem Abrufproblem hängenblieb, verzerrt jede spätere Auswertung — und die
+Kontrollgruppe, aus einer Rumpfmenge gezogen, misst gegen nichts.
+
+Gegen die Ursache läuft eine zweite Runde: Abgewiesene Abrufe werden nach einer
+Pause und mit zwei statt acht gleichzeitigen Verbindungen wiederholt. Nur einmal
+— wer beliebig oft nachfasst, verwandelt eine harte Störung in einen Lauf, der
+ins Zeitlimit kriecht, statt sie zu melden. Und nur, wenn der Ausfall überhaupt
+nach Drosselung aussieht: Zwanzig Sekunden Pause wegen eines delisteten Titels
+wären verschwendet.
+
 ## Wartung — die Drift-Prüfung
 
 Die Fehler, die dieses Werkzeug im Betrieb einholen, sind selten

@@ -137,6 +137,14 @@
       </tbody>
     </table>
   </div>
+  {% elif stats.trouble %}
+  <div class="panel"><p class="empty" style="margin:0">
+    <strong>Lauf unvollständig — keine Aussage über den Markt möglich.</strong><br>
+    {{ stats.trouble }}<br>
+    Die leere Trefferliste bedeutet hier <em>nicht</em>, dass nichts gefunden
+    wurde, sondern dass nicht nachgesehen werden konnte. Es wurde nichts ins
+    Journal übernommen.
+  </p></div>
   {% else %}
   <div class="panel"><p class="empty" style="margin:0">
     Kein Titel hat die Score-Schwelle erreicht. Das ist ein gültiges Ergebnis,

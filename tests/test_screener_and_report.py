@@ -179,6 +179,145 @@ class TestScreener:
         assert "^GDAXI" in provider.history_calls
 
 
+class Throttling(FakeProvider):
+    """Weist die ersten `n` Abrufe je Art ab — wie Yahoo unter Last.
+
+    Nicht "dieser Titel ist weg", sondern "gerade nicht, versuch es später":
+    Dieselben Titel antworten in der zweiten Runde.
+    """
+
+    def __init__(self, *args, reject_first: int = 0, **kw):
+        super().__init__(*args, **kw)
+        self.remaining = reject_first
+        self.rounds: list[str] = []
+
+    def _throttle(self, ticker: str) -> None:
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise ProviderError(f"Too Many Requests für {ticker}")
+
+    def fundamentals(self, ticker: str):
+        self._throttle(ticker)
+        return super().fundamentals(ticker)
+
+    def history(self, ticker: str, period: str = "3y"):
+        self._throttle(ticker)
+        return super().history(ticker, period)
+
+
+class TestDegradedRun:
+    """Der Lauf vom 4. und 5. August: gemeldet als 'keine Treffer'.
+
+    Tatsächlich waren von 674 Titeln 342 mit Daten angekommen, von 217
+    gefilterten wurde genau einer bewertet, 548 Abrufe schlugen fehl. Die
+    Nachricht war beruhigend und falsch. Ein Lauf, der fast nichts gesehen
+    hat, muss das sagen — sonst ist eine Störung von einem ruhigen Markt
+    nicht zu unterscheiden.
+    """
+
+    def test_intact_run_reports_no_trouble(self, screening_result):
+        result, _ = screening_result
+        assert result.trouble is None
+        assert result.degraded is False
+
+    def test_missing_scores_are_flagged_as_trouble(self):
+        from broker.screener import ScreeningStats
+
+        # Die realen Zahlen vom 5. August.
+        stats = ScreeningStats(
+            universe_size=674, fundamentals_ok=342, passed_filters=217, scored=1,
+            errors={f"T{i}": "Kurshistorie" for i in range(548)},
+        )
+        assert stats.degraded
+        assert "217" in stats.trouble and "1" in stats.trouble
+        assert "nie geprüft" in stats.trouble
+
+    def test_missing_data_is_flagged_even_without_filter_stage(self):
+        from broker.screener import ScreeningStats
+
+        stats = ScreeningStats(universe_size=674, fundamentals_ok=100)
+        assert stats.degraded
+        assert "100 von 674" in stats.trouble
+
+    def test_empty_hit_list_alone_is_not_trouble(self):
+        """Ein wirklich ruhiger Markt bleibt eine gültige Aussage."""
+        from broker.screener import ScreeningStats
+
+        stats = ScreeningStats(
+            universe_size=100, fundamentals_ok=98, passed_filters=40, scored=40
+        )
+        assert stats.trouble is None
+
+    def test_message_says_unvollstaendig_not_keine_treffer(self):
+        from broker.notify import build_summary
+
+        entries, provider = build_universe()
+        config = Config(thresholds=Thresholds(min_score=0.0, min_history_days=200))
+        result = Screener(config, provider, workers=2).run(entries, neutral_regime())
+        result.stats.fundamentals_ok = 1  # Lauf nachträglich als gestört markieren
+
+        summary = build_summary(result)
+        assert "unvollständig" in summary
+        assert "keine Treffer über der Score-Schwelle" not in summary
+        assert "Journal" in summary
+
+
+class TestRetryOnThrottling:
+    """Yahoo weist unter Last ab — dieselben Titel antworten kurz darauf.
+
+    Der DAX-Lauf über 40 Titel hatte null Fehler, der Lauf über 674 hatte 548.
+    Nicht die Titel waren das Problem, sondern ihre Zahl.
+    """
+
+    def test_throttled_calls_are_recovered_in_the_second_round(self):
+        entries, base = build_universe()
+        provider = Throttling(
+            base._fundamentals, base._histories, reject_first=6
+        )
+        config = Config(
+            thresholds=Thresholds(min_score=0.0, min_history_days=200),
+            max_candidates=20,
+        )
+        result = Screener(
+            config, provider, workers=2, retry_pause=0
+        ).run(entries, neutral_regime())
+
+        # Ohne zweite Runde wären sechs Titel ohne Fundamentaldaten geblieben.
+        assert result.stats.fundamentals_ok == 8
+        assert result.trouble is None
+
+    def test_few_failures_do_not_trigger_the_slow_round(self, monkeypatch):
+        """Zwanzig Sekunden Pause wegen eines delisteten Titels wären verschwendet."""
+        from broker import screener as screener_module
+
+        slept: list[float] = []
+        monkeypatch.setattr(screener_module.time, "sleep", lambda s: slept.append(s))
+
+        entries, provider = build_universe()  # BROKEN.DE fällt aus, sonst nichts
+        config = Config(
+            thresholds=Thresholds(min_score=0.0, min_history_days=200),
+            max_candidates=20,
+        )
+        Screener(config, provider, workers=2).run(entries, neutral_regime())
+
+        assert slept == []
+
+    def test_broad_failure_waits_before_retrying(self, monkeypatch):
+        from broker import screener as screener_module
+
+        slept: list[float] = []
+        monkeypatch.setattr(screener_module.time, "sleep", lambda s: slept.append(s))
+
+        entries, base = build_universe()
+        provider = Throttling(base._fundamentals, base._histories, reject_first=6)
+        config = Config(thresholds=Thresholds(min_score=0.0, min_history_days=200))
+        Screener(config, provider, workers=2, retry_pause=7.5).run(
+            entries, neutral_regime()
+        )
+
+        assert slept == [7.5]
+
+
 class TestReport:
     def test_html_contains_candidates_and_disclaimer(self, screening_result):
         result, _ = screening_result
@@ -196,6 +335,16 @@ class TestReport:
 
         html = render_html(result)
         assert "Kein Titel hat die Score-Schwelle erreicht" in html
+
+    def test_html_distinguishes_a_broken_run_from_a_quiet_market(self):
+        entries, provider = build_universe()
+        config = Config(thresholds=Thresholds(min_score=99.9, min_history_days=200))
+        result = Screener(config, provider, workers=2).run(entries, neutral_regime())
+        result.stats.fundamentals_ok = 1
+
+        html = render_html(result)
+        assert "Lauf unvollständig" in html
+        assert "Das ist ein gültiges Ergebnis" not in html
 
     def test_html_escapes_untrusted_news_titles(self, screening_result):
         result, _ = screening_result
