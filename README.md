@@ -425,7 +425,7 @@ Eine Handvoll Titel, die nur deshalb Treffer wurden, weil ihre Konkurrenz an
 einem Abrufproblem hängenblieb, verzerrt jede spätere Auswertung — und die
 Kontrollgruppe, aus einer Rumpfmenge gezogen, misst gegen nichts.
 
-### Die Ursache: Yahoos Zeitfenster
+### Die Ursache: zwei Endpunkte, zwei Grenzen
 
 Der Fehlertext ist eindeutig:
 
@@ -433,27 +433,75 @@ Der Fehlertext ist eindeutig:
 Too Many Requests. Rate limited. Try after a while.
 ```
 
-Ein Lauf über das ganze Universum braucht rund 674 Fundamentaldaten-Abrufe plus
-etwa 220 Kurshistorien, zusammen gut 900. Durchgekommen sind 342 (5. August) und
-334 (6. August) — beide Male etwa ein Drittel. Durch ein Fenster von 340 bekommt
-man 900 Abrufe mit keinem Tempo. Nur durch das nächste Fenster.
+Zuerst sah es nach einem Zeitfenster aus, das sich mit Warten öffnen lässt. Der
+Lauf wartet deshalb bei Drosselung bis zu dreimal je zwei Minuten und holt die
+offenen Abrufe mit zwei statt acht Verbindungen nach. **Abgebrochen wird, sobald
+eine Runde nichts zurückholt** — bringt eine Pause keinen einzigen Titel zurück,
+ist es keine Drosselung, und weiteres Warten schafft nur einen Lauf, der ins
+Zeitlimit kriecht, statt das Problem zu melden. Die Rundenzahl begrenzt, die
+Erholung entscheidet.
 
-Deshalb wartet der Lauf bei Drosselung bis zu dreimal je zwei Minuten und holt
-die offenen Abrufe mit zwei statt acht Verbindungen nach. **Abgebrochen wird,
-sobald eine Runde nichts zurückholt** — das ist die eigentliche Regel: Bringt
-eine Pause keinen einzigen Titel zurück, ist es keine Drosselung, und weiteres
-Warten schafft nur einen Lauf, der ins Zeitlimit kriecht, statt das Problem zu
-melden. Die Rundenzahl begrenzt, die Erholung entscheidet.
+Der Lauf vom 10. August zeigte dann, dass das nur die halbe Geschichte war:
 
-Gewartet wird ohnehin nur, wenn der Ausfall nach Drosselung aussieht: Zwei
-Minuten Pause wegen eines delisteten Titels wären verschwendet.
+```
+674 Titel im Universum, 327 mit Daten, 238 nach Filtern, 238 bewertet, 347 Fehler
+```
 
-Dass das reicht, ist damit nicht bewiesen — am 3. August lief derselbe Code über
-dasselbe Universum ohne Wiederholung durch und lieferte 15 Treffer. Wie viel
-Kontingent übrig ist, hängt auch daran, wie viel andere GitHub-Runner unter
-derselben Adresse schon verbraucht haben. Bleibt es dabei, ist der ehrliche
-nächste Schritt kein weiteres Nachfassen, sondern ein Datenanbieter mit
-zugesicherten Kontingenten.
+238 gefiltert, 238 bewertet — kein einziger Ausfall mehr in der Bewertungsphase,
+wo am 5. und 6. August von 217 bzw. 220 Titeln jeweils genau *einer* durchkam.
+Das Warten wirkte also, aber nur bei den Kursdaten. Yahoo hat zwei Endpunkte mit
+sehr verschiedenen Grenzen:
+
+| Endpunkt | wofür | Grenze |
+|---|---|---|
+| Chart | Kurshistorien | großzügig — die Wartungsprüfung holt 674 am Stück |
+| `.info` | Fundamentaldaten | rund 330, und erholt sich nicht in Minuten |
+
+342, 334, 327 an drei Tagen. Das ist kein Zeitfenster, das man aussitzt.
+
+### Der Bestand: was ein Lauf nicht schafft, holt der nächste
+
+Ein Universum von 674 Titeln passt nicht in einen Lauf. Es passt in drei, wenn
+der Lauf sich merkt, was er beim letzten Mal geholt hat. `store/fundamentals.jsonl`
+hält je Titel einen Eintrag mit Abrufdatum; jeder Lauf frischt die **280
+ältesten** auf und nimmt den Rest von dort.
+
+Das ist vertretbar, weil die teuren Felder die trägen sind: Gewinn je Aktie,
+Verschuldung, Eigenkapital und Branche ändern sich quartalsweise. Was sich
+täglich bewegt, ist der Kurs — und der kommt aus dem billigen Endpunkt,
+taggenau, für jeden Titel in jedem Lauf.
+
+So läuft es sich ein:
+
+| Tag | frisch | aus dem Bestand | Abdeckung | ältester Eintrag |
+|---|---|---|---|---|
+| 1 | 280 | 0 | 42 % | 0 Tage |
+| 2 | 280 | 280 | 83 % | 1 Tag |
+| 3 | 280 | 394 | 100 % | 2 Tage |
+| ab dann | 280 | 394 | 100 % | 2 Tage |
+
+Der erste Lauf nach einem leeren Bestand meldet sich also als unvollständig —
+zu Recht, er hat erst 42 % gesehen. Ab dem dritten Tag steht das Universum
+vollständig, und kein Eintrag ist älter als zwei Tage.
+
+Zwei Grenzen hält der Bestand selbst ein:
+
+* **Einträge über sieben Tage werden nicht mehr herausgegeben.** Fällt der Abruf
+  länger aus, altert der Bestand aus, die Abdeckung sinkt, und der Lauf meldet
+  sich als unvollständig — statt mit Zahlen aus der Vorwoche einen vollständigen
+  vorzutäuschen. Der Bestand überbrückt einen Ausfall, er ersetzt ihn nicht.
+* **Fehlende Titel werden benannt, nicht verschwiegen.** Wer weder frisch geholt
+  noch brauchbar im Bestand ist, steht mit Begründung im Bericht.
+
+Im Workflow überdauert der Bestand als `actions/cache`. Bewusst nicht im
+Repository: Er ist Arbeitsvorrat, kein Messergebnis, jederzeit neu beschaffbar,
+und würde die Historie täglich um ein Vielfaches seiner selbst aufblähen — anders
+als das Journal, das genau deshalb eingecheckt wird. Gesichert wird er mit
+`actions/cache/save` unter `if: always()`: Ein unvollständiger Lauf endet mit
+Exit-Code 1, und genau dann ist der Bestand am wertvollsten, weil er die Titel
+enthält, die heute noch durchkamen.
+
+`--no-store` schaltet ihn ab, `--refresh-budget` verstellt die 280.
 
 ## Wartung — die Drift-Prüfung
 

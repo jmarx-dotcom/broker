@@ -34,6 +34,23 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install -e .
 
+      # Yahoo deckelt den Fundamentaldaten-Endpunkt bei rund 330 Abrufen, das
+      # Universum hat 674. Der Bestand überbrückt das über mehrere Läufe — er
+      # muss den Runner also überdauern. Ins Repository gehört er nicht: Er ist
+      # Arbeitsvorrat, kein Messergebnis, und würde die Historie täglich um ein
+      # Vielfaches seiner selbst aufblähen. Anders als das Journal ist er auch
+      # jederzeit neu beschaffbar.
+      - name: Bestand an Fundamentaldaten laden
+        uses: actions/cache/restore@v4
+        with:
+          path: store/
+          # Jeder Lauf schreibt einen neuen Schlüssel; `restore-keys` greift den
+          # jüngsten vorhandenen. Ein Cache-Eintrag ist unveränderlich — ohne
+          # rotierenden Schlüssel bliebe der Bestand für immer der vom ersten
+          # Lauf.
+          key: fundamentals-${{ github.run_id }}
+          restore-keys: fundamentals-
+
       - name: Screening starten
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
@@ -48,6 +65,18 @@ jobs:
             --universe "${{ inputs.universe || 'all' }}" \
             ${{ inputs.no_llm && '--no-llm' || '' }} \
             --report --json --notify
+
+      # Bewusst `always()` und bewusst restore/save statt des kombinierten
+      # `actions/cache`: Ein unvollständiger Lauf endet mit Exit-Code 1, und
+      # genau dann ist der Bestand am wertvollsten — er enthält die Titel, die
+      # heute noch durchkamen. Würde er nur bei grünem Lauf gespeichert, füllte
+      # er sich nie an den Tagen, an denen er gebraucht wird.
+      - name: Bestand sichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: store/
+          key: fundamentals-${{ github.run_id }}
 
       - name: Journal zurückschreiben
         if: always()

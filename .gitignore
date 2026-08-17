@@ -10,3 +10,4 @@ out/
 *.sqlite
 *.sqlite3
 .DS_Store
+store/

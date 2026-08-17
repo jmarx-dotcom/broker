@@ -19,6 +19,7 @@ from broker.macro.sensitivity import sector_label
 from broker.models import MacroRegime
 from broker.providers.cache import DayCache
 from broker.providers.factory import get_provider
+from broker.providers.store import REFRESH_BUDGET
 from broker.screener import Screener
 from broker.universe import INDEX_GROUPS, load_universe
 
@@ -80,8 +81,28 @@ def cmd_screen(args: argparse.Namespace) -> int:
     log.info("Makro: %s", regime.summary)
 
     provider = get_provider(config, use_cache=use_cache)
-    screener = Screener(config, provider, workers=args.workers)
+
+    # Bestand an Fundamentaldaten: Yahoo deckelt den `.info`-Endpunkt bei rund
+    # 330 Abrufen, das Universum hat 674. Was ein Lauf nicht schafft, holt der
+    # nächste — und bis dahin trägt der Bestand.
+    from broker.providers.store import FundamentalsStore
+
+    store = None if args.no_store else FundamentalsStore(config.fundamentals_store)
+    if store is not None:
+        log.info(
+            "Bestand: %d Einträge aus %s.", store.load(), store.path
+        )
+
+    screener = Screener(
+        config, provider, workers=args.workers, store=store,
+        refresh_budget=args.refresh_budget,
+    )
     result = screener.run(entries, regime)
+
+    if store is not None:
+        store.drop_unknown([e.ticker for e in entries])
+        store.prune()
+        log.info("Bestand: %d Einträge gespeichert.", store.save())
 
     # LLM-Einordnung nur für die tatsächlichen Treffer — pro Titel ein Aufruf.
     if result.candidates and not args.no_llm:
@@ -548,6 +569,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     screen.add_argument("--limit", type=int, help="Nur die ersten N Titel prüfen")
     screen.add_argument("--workers", type=int, default=8, help="Parallele Abrufe")
+    screen.add_argument(
+        "--no-store", action="store_true",
+        help="Fundamentaldaten nicht aus dem Bestand ergänzen",
+    )
+    screen.add_argument(
+        "--refresh-budget", type=int, default=REFRESH_BUDGET,
+        help="So viele Titel je Lauf auffrischen (Rest aus dem Bestand)",
+    )
     screen.add_argument("--report", action="store_true", help="HTML-Report schreiben")
     screen.add_argument("--json", action="store_true", help="JSON-Export schreiben")
     screen.add_argument("--notify", action="store_true", help="Benachrichtigung senden")

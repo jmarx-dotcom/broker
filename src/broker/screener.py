@@ -29,6 +29,7 @@ from broker.analysis import (
     sector_medians,
 )
 from broker.config import Config
+from broker.providers.store import REFRESH_BUDGET, FundamentalsStore
 from broker.macro.regime import bond_yield_for
 from broker.models import Candidate, Fundamentals, MacroRegime, PriceHistory
 from broker.providers.base import MarketDataProvider, ProviderError
@@ -78,12 +79,26 @@ class ScreeningStats:
     passed_filters: int = 0
     scored: int = 0
     errors: dict[str, str] = field(default_factory=dict)
+    #: Frisch geholt vs. aus dem Bestand ergänzt — die Summe ist
+    #: `fundamentals_ok`. Getrennt, weil ein Lauf, der alles aus dem Bestand
+    #: nimmt, zwar vollständig aussieht, aber nichts Neues gesehen hat.
+    fundamentals_fresh: int = 0
+    fundamentals_stored: int = 0
+    #: Ältester verwendeter Bestandseintrag in Tagen.
+    oldest_stored_days: int = 0
 
     def summary(self) -> str:
-        return (
+        text = (
             f"{self.universe_size} Titel im Universum, "
-            f"{self.fundamentals_ok} mit Daten, "
-            f"{self.passed_filters} nach Filtern, "
+            f"{self.fundamentals_ok} mit Daten"
+        )
+        if self.fundamentals_stored:
+            text += (
+                f" ({self.fundamentals_fresh} frisch, {self.fundamentals_stored} "
+                f"aus dem Bestand, ältester {self.oldest_stored_days} Tage)"
+            )
+        return text + (
+            f", {self.passed_filters} nach Filtern, "
             f"{self.scored} bewertet, "
             f"{len(self.errors)} Fehler"
         )
@@ -203,12 +218,18 @@ class Screener:
         workers: int = 8,
         retry_workers: int = RETRY_WORKERS,
         retry_pause: float = RETRY_PAUSE,
+        store: "FundamentalsStore | None" = None,
+        refresh_budget: int = REFRESH_BUDGET,
+        run_date: date | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
         self.workers = max(1, workers)
         self.retry_workers = max(1, retry_workers)
         self.retry_pause = retry_pause
+        self.store = store
+        self.refresh_budget = refresh_budget
+        self.run_date = run_date or date.today()
 
     # -- Datenbeschaffung -------------------------------------------------
 
@@ -288,12 +309,67 @@ class Screener:
     def _fetch_fundamentals(
         self, entries: list[UniverseEntry], stats: ScreeningStats
     ) -> dict[str, Fundamentals]:
+        """Frischt einen Teil des Universums auf, ergänzt den Rest aus dem Bestand.
+
+        Ohne Bestand bleibt es beim alten Verhalten — alle Titel abrufen. Das
+        ist für kleine Universen richtig: Der DAX-Lauf über 40 Titel hatte nie
+        ein Drosselungsproblem, dort wäre ein Bestand nur ein Umweg.
+        """
+        tickers = [e.ticker for e in entries]
+        if self.store is None:
+            result = self._gather(
+                tickers, self.provider.fundamentals, "Fundamentaldaten", stats
+            )
+            stats.fundamentals_ok = stats.fundamentals_fresh = len(result)
+            return result
+
+        # Auffrischen nach Dringlichkeit. Passt das Universum ganz ins Budget,
+        # bleibt `keep` leer — der Bestand dient dann nur noch als Rückfall für
+        # gescheiterte Abrufe. Diese Rückfallebene gilt *immer*: Ein Titel, der
+        # heute nicht antwortet, ist deswegen nicht verschwunden.
+        order = self.store.refresh_order(tickers, self.run_date)
+        refresh, keep = order[: self.refresh_budget], order[self.refresh_budget :]
+        if keep:
+            log.info(
+                "Fundamentaldaten: %d von %d Titeln werden aufgefrischt, %d aus "
+                "dem Bestand.",
+                len(refresh), len(tickers), len(keep),
+            )
+
         result = self._gather(
-            [e.ticker for e in entries],
-            self.provider.fundamentals,
-            "Fundamentaldaten",
-            stats,
+            refresh, self.provider.fundamentals, "Fundamentaldaten", stats
         )
+        stats.fundamentals_fresh = len(result)
+        for data in result.values():
+            self.store.put(data, self.run_date)
+
+        # Der Bestand füllt zweierlei auf: die bewusst übersprungenen Titel und
+        # die, deren Abruf gescheitert ist. Ein gescheiterter Abruf ist damit
+        # kein Loch mehr, solange der letzte gelungene nicht zu alt ist.
+        ages: list[int] = []
+        for ticker in keep + [t for t in refresh if t not in result]:
+            stored = self.store.get(ticker, self.run_date)
+            if stored is None:
+                # Weder frisch geholt noch brauchbar im Bestand. Das gehört
+                # benannt: Sonst fehlten Titel lautlos, und die Abdeckung
+                # sänke, ohne dass im Bericht stünde, warum.
+                age = self.store.age_of(ticker, self.run_date)
+                stats.errors.setdefault(
+                    ticker,
+                    "Fundamentaldaten: nicht aufgefrischt und "
+                    + (
+                        "nicht im Bestand"
+                        if age is None
+                        else f"Bestandseintrag {age} Tage alt"
+                    ),
+                )
+                continue
+            result[ticker] = stored
+            ages.append(self.store.age_of(ticker, self.run_date) or 0)
+            stats.errors.pop(ticker, None)
+
+        stats.fundamentals_stored = len(ages)
+        stats.oldest_stored_days = max(ages) if ages else 0
         stats.fundamentals_ok = len(result)
         return result
 

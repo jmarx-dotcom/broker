@@ -74,6 +74,11 @@ class Config:
     #: Wird ins Repository eingecheckt — in GitHub Actions ist das Dateisystem
     #: nach jedem Lauf weg, ohne Commit lernt das Tool also nie etwas dazu.
     journal_path: Path = Path("journal/history.jsonl")
+    #: Bestand an Fundamentaldaten über Läufe hinweg. Anders als das Journal
+    #: nicht im Repository, sondern im Actions-Cache — er ist Arbeitsvorrat,
+    #: kein Messergebnis, und würde die Historie täglich um ein Vielfaches
+    #: seiner selbst aufblähen.
+    fundamentals_store: Path = Path("store/fundamentals.jsonl")
     max_candidates: int = 15
     weights: Weights = field(default_factory=Weights)
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -99,5 +104,8 @@ class Config:
             cache_dir=Path(env("BROKER_CACHE_DIR") or "cache"),
             out_dir=Path(env("BROKER_OUT_DIR") or "out"),
             journal_path=Path(env("BROKER_JOURNAL") or "journal/history.jsonl"),
+            fundamentals_store=Path(
+                env("BROKER_STORE") or "store/fundamentals.jsonl"
+            ),
             max_candidates=int(env("BROKER_MAX_CANDIDATES") or "15"),
         )
